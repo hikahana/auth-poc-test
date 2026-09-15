@@ -40,9 +40,9 @@
 - 学生団体単体ではGoogle Workspace for Education／for Nonprofitsのいずれも対象外で、無料取得は現実的ではない
 - Google Drive権限の一元化は今回のスコープ外とし、当面は現状の運用（メールアドレスベースの手動管理）を維持する
 
-### 2.2 認証方式の2つの選択肢（★要決定）
+### 2.2 認証方式の2つの選択肢 → **案A（Firebase Authentication）に決定**
 
-現時点でこの2案のどちらにするかは未決定です。Claude Codeセッションの最初に決めてください。
+2026-09-16、案Aで進めることを決定。ホワイトリスト機構（2.3節）はFirebase標準機能では実現できないため、独自実装（DBでの承認管理＋バックエンドでのID Token検証後チェック）とする方針も合わせて確定。
 
 **案A: Firebase Authentication（無印）を軸にする**
 - 既存のパスワードログインとGoogle SSOの両方をFirebase Auth上に統合
@@ -97,11 +97,11 @@
 
 ## 5. 次のアクション（Claude Codeでの作業候補）
 
-1. 案A・案Bどちらで進めるか決定する
-2. 認証基盤API自体の実装言語を決定する（Go推奨。理由: 案AならFirebase Admin SDK公式対応、案BでもOAuthライブラリが揃っている）
+1. ~~案A・案Bどちらで進めるか決定する~~ → **案A（Firebase Authentication）に決定済み**
+2. 認証基盤API自体の実装言語を決定する（Go推奨。理由: Firebase Admin SDK公式対応）
 3. リポジトリのディレクトリ構成を作る（例: `cmd/`, `internal/`, `docs/`）
-4. （案A選択時）Firebaseプロジェクトの新規作成、Sign-in method有効化（メール/パスワード・Google）はFirebaseコンソールでの手動操作が必要
-5. 上記テーブル設計をもとにマイグレーションファイルを作成
+4. Firebaseプロジェクトの新規作成、Sign-in method有効化（メール/パスワード・Google）はFirebaseコンソールでの手動操作が必要
+5. 上記テーブル設計をもとにマイグレーションファイルを作成（`whitelist`テーブルは独自実装として必須）
 6. 認証基盤APIのエンドポイント設計（トークン検証エンドポイント、whitelist承認用の管理エンドポイント等）に着手
 
 ---
