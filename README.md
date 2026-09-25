@@ -46,7 +46,11 @@ whitelistに登録せず `status: "email_unverified"` の403を返す。whitelis
 
 ## プロダクトへの組み込み例
 
-- [examples/gm2-mock](examples/gm2-mock) — group-manager-2（Rails + devise_token_auth）の認証部分を再現したモックへの組み込み
+- [examples/gm2-mock](examples/gm2-mock) — group-manager-2（Rails + devise_token_auth）の認証部分を再現したモックへの組み込み（:3100）
+- [examples/finansu-mock](examples/finansu-mock) — FinanSu（Go + Echo、独自の `mail_auth` / `session`）の認証部分を再現したモックへの組み込み（:3200）
+
+どちらも、認証基盤でID Tokenとwhitelistを確認したあと、各プロダクトの既存ユーザーに紐付けて、
+**そのプロダクトの既存のログイントークンを発行する**形にしている。既存のAPIと権限判定には手を入れない。
 
 ## 未実装（PoCのスコープ外）
 

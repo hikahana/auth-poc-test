@@ -72,6 +72,27 @@
   <pre id="gm2-out"></pre>
 </section>
 
+<section>
+  <h2>5. FinanSuモック連携 (examples/finansu-mock)</h2>
+  <input id="fs-url" value="http://localhost:3200" size="28">
+  <p><small>① FinanSuに既存ユーザーがいる状態を作る (本物と同じ POST /users → POST /mail_auth/signup)</small></p>
+  <div>
+    <input id="fs-email" type="email" placeholder="email (空ならFirebaseのメール)">
+    <input id="fs-password" type="password" placeholder="password">
+    <select id="fs-role">
+      <option value="1">1: user</option><option value="2">2: admin</option>
+      <option value="3">3: Finance Director</option><option value="4">4: Finance Staff</option>
+    </select>
+    <button id="fs-register">FinanSuにパスワードで新規登録</button>
+  </div>
+  <p><small>② FirebaseのID TokenでFinanSuにログイン → FinanSuの既存accessTokenが返る</small></p>
+  <button id="fs-firebase" disabled>FirebaseでFinanSuにログイン</button>
+  <p><small>③ 返ってきたaccessTokenで既存APIを叩く (権限はFinanSuのroleIDのまま)</small></p>
+  <button id="fs-current">current_user</button>
+  <p>結果: <span id="fs-verdict">-</span></p>
+  <pre id="fs-out"></pre>
+</section>
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
@@ -97,6 +118,7 @@ $("send-verify").onclick = guard(async () => {
 onAuthStateChanged(auth, async (user) => {
   $("verify").disabled = !user;
   $("gm2-firebase").disabled = !user;
+  $("fs-firebase").disabled = !user;
   $("state").textContent = user ? `${user.email} (uid: ${user.uid}, email_verified: ${user.emailVerified})` : "未ログイン";
   show("token", user ? await user.getIdToken() : "");
   show("verify-out", ""); $("verdict").textContent = "-";
@@ -186,6 +208,41 @@ const gm2Get = (path) => guard(async () => {
 });
 $("gm2-current").onclick = gm2Get("/api/v1/users/current");
 $("gm2-staff").onclick = gm2Get("/api/v1/staff/ping");
+
+let fsToken = null;
+const fs = async (method, path, init = {}) => {
+  const res = await fetch($("fs-url").value.replace(/\/$/, "") + path, { method, ...init });
+  const body = await res.json().catch(() => null);
+  $("fs-verdict").innerHTML = `<span class="${res.ok ? "ok" : "ng"}">${method} ${path.split("?")[0]} → HTTP ${res.status}</span>`;
+  if (!res.ok) throw Object.assign(new Error(body?.message || `HTTP ${res.status}`), { shown: true, body });
+  return body;
+};
+const fsGuard = (fn) => async () => {
+  try { await fn(); } catch (e) { e.shown ? show("fs-out", e.body) : alert(e.message); }
+};
+
+$("fs-register").onclick = fsGuard(async () => {
+  const email = $("fs-email").value || auth.currentUser?.email;
+  const q = (o) => "?" + new URLSearchParams(o);
+  const user = await fs("POST", "/users" + q({ name: email, bureau_id: 1, role_id: $("fs-role").value }));
+  const token = await fs("POST", "/mail_auth/signup" + q({ email, password: $("fs-password").value, user_id: user.id }));
+  show("fs-out", { user, password_login_token: token });
+});
+
+$("fs-firebase").onclick = fsGuard(async () => {
+  fsToken = null;
+  const body = await fs("POST", "/mail_auth/firebase_signin", {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
+  });
+  fsToken = body.accessToken;
+  show("fs-out", body);
+});
+
+$("fs-current").onclick = fsGuard(async () => {
+  if (!fsToken) throw new Error("先に「FirebaseでFinanSuにログイン」してください");
+  show("fs-out", await fs("GET", "/current_user", { headers: { "Access-Token": fsToken } }));
+});
 </script>
 </body>
 </html>
