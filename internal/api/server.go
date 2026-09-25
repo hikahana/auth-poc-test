@@ -64,10 +64,13 @@ type verifyRequest struct {
 }
 
 type verifyResponse struct {
-	Sub    string `json:"sub"`
-	Email  string `json:"email"`
-	Status string `json:"status"`
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Status        string `json:"status"`
 }
+
+const statusEmailUnverified = "email_unverified"
 
 // handleVerify is the endpoint every client product calls after Firebase
 // Client SDK hands it an ID token. It verifies the token's signature/expiry
@@ -87,6 +90,17 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := verifyResponse{Sub: identity.Sub, Email: identity.Email, EmailVerified: identity.EmailVerified}
+
+	// The whitelist is keyed by email, and Firebase email/password sign-up does
+	// not prove ownership of the address. Without this check anyone could
+	// register an approved address in Firebase and pass the whitelist.
+	if identity.Email == "" || !identity.EmailVerified {
+		resp.Status = statusEmailUnverified
+		writeJSON(w, http.StatusForbidden, resp)
+		return
+	}
+
 	entry, err := s.whitelist.EnsureEntry(r.Context(), identity.Email)
 	if err != nil {
 		s.logger.Error("whitelist lookup failed", "error", err)
@@ -94,7 +108,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := verifyResponse{Sub: identity.Sub, Email: identity.Email, Status: string(entry.Status)}
+	resp.Status = string(entry.Status)
 
 	if entry.Status != whitelist.StatusApproved {
 		writeJSON(w, http.StatusForbidden, resp)
