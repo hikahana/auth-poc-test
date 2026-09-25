@@ -28,7 +28,9 @@
     <button id="signup-pw">新規登録</button>
   </div>
   <button id="signout">ログアウト</button>
+  <button id="send-verify">確認メールを送信 (メール/パスワード用)</button>
   <p>状態: <span id="state">未ログイン</span></p>
+  <p><small>メール/パスワードで作ったアカウントは、確認メールのリンクを踏むまで <code>email_unverified</code> で拒否されます。</small></p>
 </section>
 
 <section>
@@ -52,10 +54,28 @@
   <pre id="admin-out"></pre>
 </section>
 
+<section>
+  <h2>4. GM2モック連携 (examples/gm2-mock)</h2>
+  <input id="gm2-url" value="http://localhost:3100" size="28">
+  <p><small>① GM2に既存ユーザーがいる状態を作る (本物と同じパスワード新規登録API)</small></p>
+  <div>
+    <input id="gm2-email" type="email" placeholder="email (空ならFirebaseのメール)">
+    <input id="gm2-password" type="password" placeholder="password (8文字以上)">
+    <button id="gm2-register">GM2にパスワードで新規登録</button>
+  </div>
+  <p><small>② FirebaseのID TokenでGM2にログイン → GM2の既存トークン(access-token/client/uid)が返る</small></p>
+  <button id="gm2-firebase" disabled>FirebaseでGM2にログイン</button>
+  <p><small>③ 返ってきたGM2トークンで既存APIを叩く (認可はGM2のロールのまま)</small></p>
+  <button id="gm2-current">現在のユーザー</button>
+  <button id="gm2-staff">staff専用API</button>
+  <p>結果: <span id="gm2-verdict">-</span></p>
+  <pre id="gm2-out"></pre>
+</section>
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
-         createUserWithEmailAndPassword, signOut, onAuthStateChanged }
+         createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendEmailVerification }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -68,10 +88,16 @@ $("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()
 $("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
 $("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
 $("signout").onclick = guard(() => signOut(auth));
+$("send-verify").onclick = guard(async () => {
+  if (!auth.currentUser) throw new Error("先にログインしてください");
+  await sendEmailVerification(auth.currentUser);
+  alert("確認メールを送信しました。リンクを開いたあと、このページで再度検証してください。");
+});
 
 onAuthStateChanged(auth, async (user) => {
   $("verify").disabled = !user;
-  $("state").textContent = user ? `${user.email} (uid: ${user.uid})` : "未ログイン";
+  $("gm2-firebase").disabled = !user;
+  $("state").textContent = user ? `${user.email} (uid: ${user.uid}, email_verified: ${user.emailVerified})` : "未ログイン";
   show("token", user ? await user.getIdToken() : "");
   show("verify-out", ""); $("verdict").textContent = "-";
 });
@@ -120,6 +146,46 @@ async function reload() {
 }
 $("reload").onclick = guard(reload);
 $("add").onclick = guard(async () => { await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value }); await reload(); });
+
+let gm2Headers = null;
+const gm2 = async (path, init = {}) => {
+  const res = await fetch($("gm2-url").value.replace(/\/$/, "") + path, init);
+  const body = await res.json().catch(() => null);
+  const ok = res.ok;
+  $("gm2-verdict").innerHTML = `<span class="${ok ? "ok" : "ng"}">${init.method || "GET"} ${path} → HTTP ${res.status}</span>`;
+  return { res, body };
+};
+
+$("gm2-register").onclick = guard(async () => {
+  const email = $("gm2-email").value || auth.currentUser?.email;
+  const password = $("gm2-password").value;
+  const { body } = await gm2("/api/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: email, email, password, password_confirmation: password }),
+  });
+  show("gm2-out", body);
+});
+
+$("gm2-firebase").onclick = guard(async () => {
+  const { res, body } = await gm2("/api/auth/firebase_sign_in", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
+  });
+  gm2Headers = res.ok
+    ? Object.fromEntries(["access-token", "client", "uid"].map((k) => [k, res.headers.get(k)]))
+    : null;
+  show("gm2-out", { gm2_token_headers: gm2Headers, body });
+});
+
+const gm2Get = (path) => guard(async () => {
+  if (!gm2Headers) throw new Error("先に「FirebaseでGM2にログイン」してください");
+  const { body } = await gm2(path, { headers: gm2Headers });
+  show("gm2-out", body);
+});
+$("gm2-current").onclick = gm2Get("/api/v1/users/current");
+$("gm2-staff").onclick = gm2Get("/api/v1/staff/ping");
 </script>
 </body>
 </html>

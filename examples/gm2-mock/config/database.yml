@@ -1,0 +1,14 @@
+# GM2 uses MySQL; SQLite keeps the mock self-contained. Nothing in the auth
+# flow depends on the database engine.
+default: &default
+  adapter: sqlite3
+  pool: 5
+  timeout: 5000
+
+development:
+  <<: *default
+  database: db/development.sqlite3
+
+test:
+  <<: *default
+  database: db/test.sqlite3

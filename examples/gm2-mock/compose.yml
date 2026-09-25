@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      # 3000 is left free for a locally running real GM2 API.
+      - "3100:3000"
+    environment:
+      AUTH_PLATFORM_URL: http://host.docker.internal:8080
+      CORS_ORIGINS: http://localhost:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/app

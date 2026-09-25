@@ -35,8 +35,22 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 whitelistに登録した上で403を返す（＝ログイン申請の一次受付を兼ねる）。運営が
 `/v1/admin/whitelist/approve` で承認するまではログインを許可しない。
 
+`email_verified` が `false` のトークン（確認メールのリンクを踏んでいないメール/パスワードのアカウント）は、
+whitelistに登録せず `status: "email_unverified"` の403を返す。whitelistはメールアドレスで照合しているため、
+この確認がないと、他人の承認済みメールアドレスでFirebaseアカウントを作るだけで通過できてしまう。
+
+## 動作確認
+
+`go run ./cmd/server` で起動したあと http://localhost:8080/ を開く（`web/`をこのサーバーが配信する）。
+`web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定を入れる。
+
+## プロダクトへの組み込み例
+
+- [examples/gm2-mock](examples/gm2-mock) — group-manager-2（Rails + devise_token_auth）の認証部分を再現したモックへの組み込み
+
 ## 未実装（PoCのスコープ外）
 
-- 各プロダクトへ渡す独自セッション/JWTの発行（`verify`は現状Firebase IDの検証結果を返すのみ）
+- 各プロダクトへ渡す独自セッション/JWTの発行（現状は各プロダクトが自分のセッションを発行する。gm2-mock参照）
+- `/v1/auth/verify` の呼び出し元の認証（`clients`テーブルでのclient_id/secret確認）
 - `clients` / `user_client_links` テーブル（手順書3節の設計はまだコード化していない）
 - SQLite以外のDB（本番想定ならPostgres等への差し替えが必要）
