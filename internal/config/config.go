@@ -8,10 +8,12 @@ type Config struct {
 	DBPath              string
 	FirebaseCredentials string
 	AdminAPIKey         string
+	WebDir              string
 }
 
 func Load() Config {
 	return Config{
+		WebDir:              getenv("AUTH_PLATFORM_WEB_DIR", "web"),
 		Addr:                getenv("AUTH_PLATFORM_ADDR", ":8080"),
 		DBPath:              getenv("AUTH_PLATFORM_DB_PATH", "auth-platform.db"),
 		FirebaseCredentials: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),

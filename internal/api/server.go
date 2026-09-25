@@ -20,11 +20,12 @@ type Server struct {
 	verifier    *firebaseauth.Verifier
 	whitelist   *whitelist.Store
 	adminAPIKey string
+	webDir      string
 	logger      *slog.Logger
 }
 
-func NewServer(verifier *firebaseauth.Verifier, wl *whitelist.Store, adminAPIKey string, logger *slog.Logger) *Server {
-	return &Server{verifier: verifier, whitelist: wl, adminAPIKey: adminAPIKey, logger: logger}
+func NewServer(verifier *firebaseauth.Verifier, wl *whitelist.Store, adminAPIKey, webDir string, logger *slog.Logger) *Server {
+	return &Server{verifier: verifier, whitelist: wl, adminAPIKey: adminAPIKey, webDir: webDir, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -40,6 +41,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+
+	if s.webDir != "" {
+		mux.Handle("GET /", http.FileServer(http.Dir(s.webDir)))
+	}
 
 	return mux
 }

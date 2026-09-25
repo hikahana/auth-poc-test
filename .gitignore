@@ -1,3 +1,4 @@
 /auth-platform.db
 /service-account.json
 .env
+/web/firebase-config.js

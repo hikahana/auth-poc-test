@@ -22,11 +22,11 @@ const (
 )
 
 type Entry struct {
-	Email      string
-	Status     Status
-	ApprovedBy string
-	CreatedAt  time.Time
-	ApprovedAt sql.NullTime
+	Email      string       `json:"email"`
+	Status     Status       `json:"status"`
+	ApprovedBy string       `json:"approved_by"`
+	CreatedAt  time.Time    `json:"created_at"`
+	ApprovedAt sql.NullTime `json:"approved_at"`
 }
 
 type Store struct {
@@ -111,7 +111,7 @@ func (s *Store) List(ctx context.Context, statusFilter Status) ([]Entry, error) 
 	}
 	defer rows.Close()
 
-	var entries []Entry
+	entries := []Entry{}
 	for rows.Next() {
 		var e Entry
 		var status string

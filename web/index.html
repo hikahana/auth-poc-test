@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>auth-poc-test 動作確認</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  section { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  h2 { margin-top: 0; font-size: 1.1rem; }
+  button { padding: .4rem .8rem; margin: .2rem .2rem .2rem 0; cursor: pointer; }
+  input { padding: .35rem; margin: .2rem .2rem .2rem 0; }
+  pre { background: #f4f4f4; padding: .6rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .ok { color: #0a7d2c; font-weight: bold; } .ng { color: #b3261e; font-weight: bold; }
+  table { border-collapse: collapse; width: 100%; } td, th { border-bottom: 1px solid #ddd; padding: .3rem; text-align: left; }
+</style>
+</head>
+<body>
+<h1>auth-poc-test 動作確認</h1>
+
+<section>
+  <h2>1. Firebaseでログイン</h2>
+  <button id="google">Googleでログイン</button>
+  <div>
+    <input id="email" type="email" placeholder="email">
+    <input id="password" type="password" placeholder="password">
+    <button id="signin-pw">メール/パスワードでログイン</button>
+    <button id="signup-pw">新規登録</button>
+  </div>
+  <button id="signout">ログアウト</button>
+  <p>状態: <span id="state">未ログイン</span></p>
+</section>
+
+<section>
+  <h2>2. 認証基盤APIで検証 (POST /v1/auth/verify)</h2>
+  <button id="verify" disabled>ID Tokenを送って検証</button>
+  <p>結果: <span id="verdict">-</span></p>
+  <pre id="verify-out"></pre>
+  <details><summary>ID Token</summary><pre id="token"></pre></details>
+</section>
+
+<section>
+  <h2>3. ホワイトリスト管理 (運営用)</h2>
+  <input id="admin-key" type="password" placeholder="AUTH_PLATFORM_ADMIN_KEY">
+  <select id="filter"><option value="">すべて</option><option value="pending">pending</option><option value="approved">approved</option><option value="rejected">rejected</option></select>
+  <button id="reload">一覧取得</button>
+  <div>
+    <input id="add-email" type="email" placeholder="事前登録するメール">
+    <button id="add">追加</button>
+  </div>
+  <table><thead><tr><th>email</th><th>status</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <pre id="admin-out"></pre>
+</section>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
+         createUserWithEmailAndPassword, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+import { firebaseConfig } from "./firebase-config.js";
+
+const auth = getAuth(initializeApp(firebaseConfig));
+const $ = (id) => document.getElementById(id);
+const show = (id, v) => { $(id).textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
+const guard = (fn) => async () => { try { await fn(); } catch (e) { alert(e.message); } };
+
+$("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()));
+$("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
+$("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
+$("signout").onclick = guard(() => signOut(auth));
+
+onAuthStateChanged(auth, async (user) => {
+  $("verify").disabled = !user;
+  $("state").textContent = user ? `${user.email} (uid: ${user.uid})` : "未ログイン";
+  show("token", user ? await user.getIdToken() : "");
+  show("verify-out", ""); $("verdict").textContent = "-";
+});
+
+$("verify").onclick = guard(async () => {
+  const res = await fetch("/v1/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
+  });
+  const body = await res.json();
+  const ok = res.status === 200;
+  $("verdict").innerHTML = `<span class="${ok ? "ok" : "ng"}">HTTP ${res.status} ${ok ? "ログイン許可" : "ログイン不可"}</span>`;
+  show("verify-out", body);
+});
+
+const admin = async (path, method = "GET", body) => {
+  const res = await fetch(path, {
+    method,
+    headers: { "X-Admin-Key": $("admin-key").value, "Content-Type": "application/json" },
+    body: body && JSON.stringify(body),
+  });
+  if (res.status === 204) return null;
+  const json = await res.json();
+  if (!res.ok) throw new Error(`${res.status}: ${json.error}`);
+  return json;
+};
+
+async function reload() {
+  const rows = await admin("/v1/admin/whitelist" + ($("filter").value ? `?status=${$("filter").value}` : ""));
+  $("rows").innerHTML = "";
+  for (const e of rows || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td></td><td></td><td></td>`;
+    tr.children[0].textContent = e.email;
+    tr.children[1].textContent = e.status;
+    for (const [label, action] of [["承認", "approve"], ["拒否", "reject"]]) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = guard(async () => { await admin(`/v1/admin/whitelist/${action}`, "POST", { email: e.email, approved_by: "test-page" }); await reload(); });
+      tr.children[2].appendChild(b);
+    }
+    $("rows").appendChild(tr);
+  }
+  show("admin-out", `${(rows || []).length} 件`);
+}
+$("reload").onclick = guard(reload);
+$("add").onclick = guard(async () => { await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value }); await reload(); });
+</script>
+</body>
+</html>

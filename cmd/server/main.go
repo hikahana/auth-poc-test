@@ -35,7 +35,7 @@ func main() {
 		logger.Warn("AUTH_PLATFORM_ADMIN_KEY is not set — admin endpoints will reject every request")
 	}
 
-	server := api.NewServer(verifier, wl, cfg.AdminAPIKey, logger)
+	server := api.NewServer(verifier, wl, cfg.AdminAPIKey, cfg.WebDir, logger)
 
 	logger.Info("starting auth platform API", "addr", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, server.Routes()); err != nil {
