@@ -11,11 +11,12 @@ import (
 	"time"
 )
 
-// Status values besides the whitelist's pending/approved/rejected and the
-// platform's email_unverified.
+// StatusAllowed is the platform's only success status (the others are
+// not_whitelisted and email_unverified); StatusInvalid is set by this client
+// when the platform rejects the token itself.
 const (
-	StatusApproved = "approved"
-	StatusInvalid  = "invalid"
+	StatusAllowed = "allowed"
+	StatusInvalid = "invalid"
 )
 
 type Result struct {

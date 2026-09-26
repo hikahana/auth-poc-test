@@ -1,32 +1,28 @@
-// Package whitelist implements the access-control mechanism Firebase Auth
-// cannot provide on its own: restricting login to a specific set of email
-// addresses. Google's `hd` claim only exists for Workspace/Cloud-org accounts,
-// so for plain gmail.com addresses this whitelist is the only real gate.
+// Package whitelist is the list of email addresses allowed to sign in through
+// the platform. Firebase accepts any Google account, and plain gmail.com
+// accounts carry no `hd` claim, so this list is the only real gate.
+//
+// Entries are registered in advance by operators; there is no self-service
+// application. An address that is not on the list is simply refused.
 package whitelist
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-type Status string
-
-const (
-	StatusPending  Status = "pending"
-	StatusApproved Status = "approved"
-	StatusRejected Status = "rejected"
-)
+var ErrNotFound = errors.New("email is not on the whitelist")
 
 type Entry struct {
-	Email      string       `json:"email"`
-	Status     Status       `json:"status"`
-	ApprovedBy string       `json:"approved_by"`
-	CreatedAt  time.Time    `json:"created_at"`
-	ApprovedAt sql.NullTime `json:"approved_at"`
+	Email     string    `json:"email"`
+	AddedBy   string    `json:"added_by"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Store struct {
@@ -50,62 +46,59 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 const schema = `
-CREATE TABLE IF NOT EXISTS whitelist (
-	email       TEXT PRIMARY KEY,
-	status      TEXT NOT NULL DEFAULT 'pending',
-	approved_by TEXT,
-	created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	approved_at DATETIME
+CREATE TABLE IF NOT EXISTS allowed_emails (
+	email      TEXT PRIMARY KEY,
+	added_by   TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
 
-// EnsureEntry returns the existing whitelist entry for email, or creates one
-// with status=pending if this is the first time we've seen it. This lets new
-// Google sign-ins register a pending request without a separate signup step.
-func (s *Store) EnsureEntry(ctx context.Context, email string) (Entry, error) {
-	entry, err := s.Get(ctx, email)
-	if err == nil {
-		return entry, nil
-	}
-	if err != sql.ErrNoRows {
-		return Entry{}, err
-	}
-
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO whitelist (email, status) VALUES (?, ?)`,
-		email, StatusPending,
-	)
-	if err != nil {
-		return Entry{}, fmt.Errorf("insert pending entry: %w", err)
-	}
-
-	return s.Get(ctx, email)
+// normalize makes lookups case-insensitive: Google reports addresses in lower
+// case, but operators may type them with capitals.
+func normalize(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
-func (s *Store) Get(ctx context.Context, email string) (Entry, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT email, status, COALESCE(approved_by, ''), created_at, approved_at
-		 FROM whitelist WHERE email = ?`, email)
+func (s *Store) IsAllowed(ctx context.Context, email string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowed_emails WHERE email = ?`, normalize(email)).Scan(&n)
+	return n > 0, err
+}
+
+// Add registers an address. Adding one that is already listed is not an error.
+func (s *Store) Add(ctx context.Context, email, addedBy string) (Entry, error) {
+	email = normalize(email)
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO allowed_emails (email, added_by) VALUES (?, ?) ON CONFLICT(email) DO NOTHING`,
+		email, addedBy,
+	); err != nil {
+		return Entry{}, fmt.Errorf("insert: %w", err)
+	}
 
 	var e Entry
-	var status string
-	if err := row.Scan(&e.Email, &status, &e.ApprovedBy, &e.CreatedAt, &e.ApprovedAt); err != nil {
-		return Entry{}, err
-	}
-	e.Status = Status(status)
-	return e, nil
+	err := s.db.QueryRowContext(ctx,
+		`SELECT email, added_by, created_at FROM allowed_emails WHERE email = ?`, email,
+	).Scan(&e.Email, &e.AddedBy, &e.CreatedAt)
+	return e, err
 }
 
-func (s *Store) List(ctx context.Context, statusFilter Status) ([]Entry, error) {
-	query := `SELECT email, status, COALESCE(approved_by, ''), created_at, approved_at FROM whitelist`
-	args := []any{}
-	if statusFilter != "" {
-		query += ` WHERE status = ?`
-		args = append(args, string(statusFilter))
+func (s *Store) Remove(ctx context.Context, email string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM allowed_emails WHERE email = ?`, normalize(email))
+	if err != nil {
+		return fmt.Errorf("delete: %w", err)
 	}
-	query += ` ORDER BY created_at DESC`
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+func (s *Store) List(ctx context.Context) ([]Entry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT email, added_by, created_at FROM allowed_emails ORDER BY email`)
 	if err != nil {
 		return nil, err
 	}
@@ -114,33 +107,10 @@ func (s *Store) List(ctx context.Context, statusFilter Status) ([]Entry, error) 
 	entries := []Entry{}
 	for rows.Next() {
 		var e Entry
-		var status string
-		if err := rows.Scan(&e.Email, &status, &e.ApprovedBy, &e.CreatedAt, &e.ApprovedAt); err != nil {
+		if err := rows.Scan(&e.Email, &e.AddedBy, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		e.Status = Status(status)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
-}
-
-// SetStatus approves or rejects a pending (or existing) entry. approvedBy
-// should identify the admin/operator making the decision, for audit purposes.
-func (s *Store) SetStatus(ctx context.Context, email string, status Status, approvedBy string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE whitelist SET status = ?, approved_by = ?, approved_at = CURRENT_TIMESTAMP
-		 WHERE email = ?`,
-		string(status), approvedBy, email,
-	)
-	if err != nil {
-		return fmt.Errorf("update status: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
 }

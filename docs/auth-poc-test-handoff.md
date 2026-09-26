@@ -63,6 +63,11 @@
 - `hd`（Hosted Domain）クレームは、Google WorkspaceまたはCloud組織に属するアカウントにのみ付与される。**個人のgmail.comアカウントには付与されない**ため、「`.nutfes@gmail.com`のようなメール命名規則での絞り込み」はGoogle側の機能では実現できず、**自作のwhitelist機構（アプリ側ロジック）が必須**
 - サフィックスパターン一致のみだと「誰でも同じ命名規則のgmailアドレスを自作できてしまう」ため、実効的なアクセス制御にはならない。真に絞り込みたいなら**ホワイトリスト方式（許可済みメールアドレスをDB管理）が本命**。運用負荷を抑えたいなら「パターン一致で一次受付→運営承認でapproved」のハイブリッドも現実的
 
+### 2.4 運用方針（2026-09-26決定）
+- Googleログインの対象はNUTMEGメンバー（実行委員）のみ。GM2の参加団体は従来のパスワードログインのまま
+- ホワイトリストは**事前登録制**。運営が許可するメールアドレスを登録し、載っていない人は拒否するだけ（承認申請・承認待ちの仕組みは持たない）
+- 名簿に載っているがプロダクトにアカウントがない人は、そのプロダクトの新規登録画面へ。メールはGoogleのもので固定し、残りの項目を入力して登録する。ロールは各プロダクトの一番低いものから始め、権限は各プロダクトで上げる
+
 ## 3. テーブル設計（たたき台）
 
 ### 認証基盤側
@@ -72,7 +77,7 @@
 | `users` | `id`(uuid, PK) / `google_sub`(unique) / `email`(nullable, キャッシュ用) / `display_name` / `created_at` / `updated_at` | ※案Aを採用しFirebaseに全面移行する場合、このテーブルは不要になりFirebaseの`uid`をそのまま使う |
 | `clients` | `id`(uuid, PK) / `client_id`(unique) / `client_secret_hash` / `name`（例: "nutfesBingo"） / `redirect_uris` / `is_active` | 「どのサービスからのリクエストを受け付けるか」の管理台帳 |
 | `user_client_links` | `user_id`(FK) / `client_id`(FK) / `first_seen_at` / `last_seen_at` | ユーザーとプロダクトの多対多の利用ログ |
-| `whitelist` | `email`または`uid` / `status`(pending/approved/rejected) / `approved_by` / `approved_at` | ログイン許可の実体。Google新規ユーザーはここで承認判定 |
+| `allowed_emails`（ホワイトリスト） | `email`(PK, 小文字で保存) / `added_by` / `created_at` | ログイン許可の実体。運営が事前登録したメールだけを通す（2026-09-26決定。承認申請の仕組みは持たない） |
 
 ### 各プロダクト側（既存usersテーブルへの追加）
 

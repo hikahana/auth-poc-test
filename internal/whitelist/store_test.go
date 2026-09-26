@@ -2,14 +2,14 @@ package whitelist
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "whitelist.db")
-	s, err := Open(dbPath)
+	s, err := Open(filepath.Join(t.TempDir(), "whitelist.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -17,68 +17,67 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
-func TestEnsureEntryCreatesPending(t *testing.T) {
+func TestOnlyRegisteredAddressesAreAllowed(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	entry, err := s.EnsureEntry(ctx, "new@example.com")
-	if err != nil {
-		t.Fatalf("EnsureEntry: %v", err)
-	}
-	if entry.Status != StatusPending {
-		t.Fatalf("want status pending, got %s", entry.Status)
+	if _, err := s.Add(ctx, "  Member.Nutfes@Gmail.com ", "admin"); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
 
-	// Calling it again must not reset an already-decided entry.
-	if err := s.SetStatus(ctx, "new@example.com", StatusApproved, "admin"); err != nil {
-		t.Fatalf("SetStatus: %v", err)
-	}
-	entry, err = s.EnsureEntry(ctx, "new@example.com")
-	if err != nil {
-		t.Fatalf("EnsureEntry (2nd): %v", err)
-	}
-	if entry.Status != StatusApproved {
-		t.Fatalf("want status approved after re-check, got %s", entry.Status)
-	}
-}
-
-func TestSetStatusUnknownEmail(t *testing.T) {
-	s := newTestStore(t)
-	err := s.SetStatus(context.Background(), "ghost@example.com", StatusApproved, "admin")
-	if err == nil {
-		t.Fatal("want error for unknown email, got nil")
-	}
-}
-
-func TestListFiltersByStatus(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
-		if _, err := s.EnsureEntry(ctx, email); err != nil {
-			t.Fatalf("EnsureEntry(%s): %v", email, err)
+	for email, want := range map[string]bool{
+		"member.nutfes@gmail.com":   true,
+		"MEMBER.NUTFES@GMAIL.COM":   true,
+		"stranger.nutfes@gmail.com": false,
+	} {
+		got, err := s.IsAllowed(ctx, email)
+		if err != nil {
+			t.Fatalf("IsAllowed(%s): %v", email, err)
+		}
+		if got != want {
+			t.Errorf("IsAllowed(%s) = %v, want %v", email, got, want)
 		}
 	}
-	if err := s.SetStatus(ctx, "a@example.com", StatusApproved, "admin"); err != nil {
-		t.Fatalf("SetStatus: %v", err)
+}
+
+func TestCheckingAnUnknownAddressDoesNotRegisterIt(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.IsAllowed(ctx, "stranger@example.com"); err != nil {
+		t.Fatal(err)
 	}
-	if err := s.SetStatus(ctx, "b@example.com", StatusRejected, "admin"); err != nil {
-		t.Fatalf("SetStatus: %v", err)
+	entries, err := s.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("want empty list, got %+v", entries)
+	}
+}
+
+func TestAddIsIdempotentAndRemoveRevokes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.Add(ctx, "a@example.com", "first-admin"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := s.Add(ctx, "A@example.com", "second-admin")
+	if err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+	if entry.AddedBy != "first-admin" {
+		t.Errorf("re-adding should keep the original entry, got added_by=%s", entry.AddedBy)
 	}
 
-	approved, err := s.List(ctx, StatusApproved)
-	if err != nil {
-		t.Fatalf("List(approved): %v", err)
+	if err := s.Remove(ctx, "A@EXAMPLE.COM"); err != nil {
+		t.Fatalf("Remove: %v", err)
 	}
-	if len(approved) != 1 || approved[0].Email != "a@example.com" {
-		t.Fatalf("want [a@example.com] approved, got %+v", approved)
+	if ok, _ := s.IsAllowed(ctx, "a@example.com"); ok {
+		t.Fatal("removed address should no longer be allowed")
 	}
-
-	all, err := s.List(ctx, "")
-	if err != nil {
-		t.Fatalf("List(all): %v", err)
-	}
-	if len(all) != 3 {
-		t.Fatalf("want 3 entries total, got %d", len(all))
+	if err := s.Remove(ctx, "a@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removing twice: got %v, want ErrNotFound", err)
 	}
 }

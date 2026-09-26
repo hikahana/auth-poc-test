@@ -1,14 +1,22 @@
 require 'test_helper'
 
 class FirebaseSignInTest < ActionDispatch::IntegrationTest
-  def verified(status: 'approved', sub: 'firebase-uid-1', email: 'member@example.com', email_verified: true)
+  def verified(status: 'allowed', sub: 'firebase-uid-1', email: 'member@example.com', email_verified: true)
     AuthPlatformClient::Result.new(status: status, sub: sub, email: email, email_verified: email_verified)
   end
 
-  def firebase_sign_in(result)
+  def firebase_post(path, result, params = {})
     AuthPlatformClient.stub(:verify, result) do
-      post '/api/auth/firebase_sign_in', params: { id_token: 'token' }, as: :json
+      post path, params: { id_token: 'token' }.merge(params), as: :json
     end
+  end
+
+  def firebase_sign_in(result)
+    firebase_post('/api/auth/firebase_sign_in', result)
+  end
+
+  def firebase_sign_up(result, name: 'Member')
+    firebase_post('/api/auth/firebase_sign_up', result, name: name)
   end
 
   test 'links an existing account by verified email and issues devise_token_auth headers' do
@@ -33,20 +41,58 @@ class FirebaseSignInTest < ActionDispatch::IntegrationTest
     assert_equal user.id, response.parsed_body.dig('data', 'id')
   end
 
-  test 'rejects a user the whitelist has not approved' do
-    create_user(email: 'member@example.com')
+  test 'asks a whitelisted member without a GM2 account to register, with the email to fix' do
+    firebase_sign_in(verified(email: 'newcomer@example.com'))
 
-    firebase_sign_in(verified(status: 'pending'))
-
-    assert_response :forbidden
+    assert_response :not_found
+    assert_equal true, response.parsed_body['registration_required']
+    assert_equal 'newcomer@example.com', response.parsed_body['email']
     assert_empty auth_headers_from(response)
   end
 
-  test 'rejects an approved login that has no GM2 account' do
-    firebase_sign_in(verified(email: 'stranger@example.com'))
+  test 'sign-up creates a lowest-role account from the token email and signs in' do
+    firebase_sign_up(verified(email: 'newcomer@example.com'), name: 'Newcomer')
+
+    assert_response :created
+    user = User.find_by!(email: 'newcomer@example.com')
+    assert_equal 'Newcomer', user.name
+    assert_equal Role::USER_ID, user.role_id
+    assert_equal 'firebase-uid-1', user.auth_platform_user_id
+
+    get '/api/v1/users/current', headers: auth_headers_from(response)
+    assert_response :ok
+  end
+
+  test 'sign-up ignores any email sent in the form' do
+    AuthPlatformClient.stub(:verify, verified(email: 'newcomer@example.com')) do
+      post '/api/auth/firebase_sign_up', params: { id_token: 'token', name: 'X', email: 'victim@example.com' }, as: :json
+    end
+
+    assert_response :created
+    assert User.exists?(email: 'newcomer@example.com')
+    assert_not User.exists?(email: 'victim@example.com')
+  end
+
+  test 'sign-up refuses when the account already exists or the login is not whitelisted' do
+    create_user(email: 'member@example.com')
+    firebase_sign_up(verified)
+    assert_response :conflict
+
+    firebase_sign_up(verified(status: 'not_whitelisted', sub: 'uid-2', email: 'someone@example.com'))
+    assert_response :forbidden
+    assert_not User.exists?(email: 'someone@example.com')
+
+    firebase_sign_up(verified(sub: 'uid-3', email: 'noname@example.com'), name: '')
+    assert_response :unprocessable_entity
+  end
+
+  test 'rejects a login that is not on the whitelist' do
+    create_user(email: 'member@example.com')
+
+    firebase_sign_in(verified(status: 'not_whitelisted'))
 
     assert_response :forbidden
-    assert_equal 0, User.where(auth_platform_user_id: 'firebase-uid-1').count
+    assert_empty auth_headers_from(response)
   end
 
   test 'does not link by an unverified email' do

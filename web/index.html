@@ -9,88 +9,114 @@
   section { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
   h2 { margin-top: 0; font-size: 1.1rem; }
   button { padding: .4rem .8rem; margin: .2rem .2rem .2rem 0; cursor: pointer; }
-  input { padding: .35rem; margin: .2rem .2rem .2rem 0; }
+  input, select { padding: .35rem; margin: .2rem .2rem .2rem 0; }
+  input[readonly] { background: #eee; color: #555; }
   pre { background: #f4f4f4; padding: .6rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
   .ok { color: #0a7d2c; font-weight: bold; } .ng { color: #b3261e; font-weight: bold; }
+  .note { color: #555; font-size: .9rem; }
+  .signup { border: 1px dashed #999; border-radius: 6px; padding: .6rem; margin: .5rem 0; }
   table { border-collapse: collapse; width: 100%; } td, th { border-bottom: 1px solid #ddd; padding: .3rem; text-align: left; }
+  details { margin-top: .6rem; }
 </style>
 </head>
 <body>
 <h1>auth-poc-test 動作確認</h1>
+<p class="note">流れ: 運営が名簿にメールを登録 → 本人がGoogleでログイン → 各プロダクトへ。
+プロダクトにアカウントがなければ、メール固定の新規登録画面が出ます。</p>
 
 <section>
-  <h2>1. Firebaseでログイン</h2>
-  <button id="google">Googleでログイン</button>
+  <h2>1. ホワイトリスト（運営が事前登録する名簿）</h2>
+  <p class="note">ここに載っているメールアドレスだけがGoogleログインを通過できます。載っていない人は拒否され、記録も残りません。
+  操作には <code>.env</code> の <code>AUTH_PLATFORM_ADMIN_KEY</code>（管理用の共有パスワード）が必要です。</p>
+  <input id="admin-key" type="password" placeholder="管理キー (AUTH_PLATFORM_ADMIN_KEY)">
+  <input id="added-by" placeholder="登録者名 (例: 自分の名前)">
   <div>
-    <input id="email" type="email" placeholder="email">
-    <input id="password" type="password" placeholder="password">
-    <button id="signin-pw">メール/パスワードでログイン</button>
-    <button id="signup-pw">新規登録</button>
+    <input id="add-email" type="email" placeholder="許可するメールアドレス" size="32">
+    <button id="add">名簿に登録</button>
+    <button id="reload">一覧を更新</button>
   </div>
-  <button id="signout">ログアウト</button>
-  <button id="send-verify">確認メールを送信 (メール/パスワード用)</button>
-  <p>状態: <span id="state">未ログイン</span></p>
-  <p><small>メール/パスワードで作ったアカウントは、確認メールのリンクを踏むまで <code>email_unverified</code> で拒否されます。</small></p>
-</section>
-
-<section>
-  <h2>2. 認証基盤APIで検証 (POST /v1/auth/verify)</h2>
-  <button id="verify" disabled>ID Tokenを送って検証</button>
-  <p>結果: <span id="verdict">-</span></p>
-  <pre id="verify-out"></pre>
-  <details><summary>ID Token</summary><pre id="token"></pre></details>
-</section>
-
-<section>
-  <h2>3. ホワイトリスト管理 (運営用)</h2>
-  <input id="admin-key" type="password" placeholder="AUTH_PLATFORM_ADMIN_KEY">
-  <select id="filter"><option value="">すべて</option><option value="pending">pending</option><option value="approved">approved</option><option value="rejected">rejected</option></select>
-  <button id="reload">一覧取得</button>
-  <div>
-    <input id="add-email" type="email" placeholder="事前登録するメール">
-    <button id="add">追加</button>
-  </div>
-  <table><thead><tr><th>email</th><th>status</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <table><thead><tr><th>email</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
   <pre id="admin-out"></pre>
 </section>
 
 <section>
-  <h2>4. GM2モック連携 (examples/gm2-mock)</h2>
-  <input id="gm2-url" value="http://localhost:3100" size="28">
-  <p><small>① GM2に既存ユーザーがいる状態を作る (本物と同じパスワード新規登録API)</small></p>
-  <div>
-    <input id="gm2-email" type="email" placeholder="email (空ならFirebaseのメール)">
-    <input id="gm2-password" type="password" placeholder="password (8文字以上)">
-    <button id="gm2-register">GM2にパスワードで新規登録</button>
-  </div>
-  <p><small>② FirebaseのID TokenでGM2にログイン → GM2の既存トークン(access-token/client/uid)が返る</small></p>
-  <button id="gm2-firebase" disabled>FirebaseでGM2にログイン</button>
-  <p><small>③ 返ってきたGM2トークンで既存APIを叩く (認可はGM2のロールのまま)</small></p>
-  <button id="gm2-current">現在のユーザー</button>
-  <button id="gm2-staff">staff専用API</button>
-  <p>結果: <span id="gm2-verdict">-</span></p>
-  <pre id="gm2-out"></pre>
+  <h2>2. Googleでログイン</h2>
+  <button id="google">Googleでログイン</button>
+  <button id="signout">ログアウト</button>
+  <p>状態: <span id="state">未ログイン</span></p>
+  <button id="verify" disabled>認証基盤で確認 (POST /v1/auth/verify)</button>
+  <span id="verdict"></span>
+  <pre id="verify-out"></pre>
+  <details><summary>ID Token</summary><pre id="token"></pre></details>
+  <details>
+    <summary>メール/パスワードでのFirebaseログイン（任意）</summary>
+    <p class="note">確認メールのリンクを踏むまでは <code>email_unverified</code> で拒否されます。</p>
+    <input id="email" type="email" placeholder="email">
+    <input id="password" type="password" placeholder="password">
+    <button id="signin-pw">ログイン</button>
+    <button id="signup-pw">Firebaseに新規登録</button>
+    <button id="send-verify">確認メールを送信</button>
+  </details>
 </section>
 
 <section>
-  <h2>5. FinanSuモック連携 (examples/finansu-mock)</h2>
-  <input id="fs-url" value="http://localhost:3200" size="28">
-  <p><small>① FinanSuに既存ユーザーがいる状態を作る (本物と同じ POST /users → POST /mail_auth/signup)</small></p>
+  <h2>3. GM2（examples/gm2-mock）</h2>
+  <input id="gm2-url" value="http://localhost:3100" size="28">
   <div>
-    <input id="fs-email" type="email" placeholder="email (空ならFirebaseのメール)">
+    <button id="gm2-firebase" disabled>GoogleでGM2にログイン</button>
+    <button id="gm2-current">現在のユーザー</button>
+    <button id="gm2-staff">staff専用API</button>
+  </div>
+  <div id="gm2-signup" class="signup" hidden>
+    <strong>GM2 新規登録</strong>
+    <div><input id="gm2-su-email" readonly size="32"> <span class="note">（Googleのメールで固定）</span></div>
+    <div><input id="gm2-su-name" placeholder="名前"></div>
+    <button id="gm2-su-submit">登録してログイン</button>
+  </div>
+  <p>結果: <span id="gm2-verdict">-</span></p>
+  <pre id="gm2-out"></pre>
+  <details>
+    <summary>（テスト用）パスワードで登録済みの既存GM2ユーザーを作る</summary>
+    <p class="note">既にGM2アカウントを持っている人が、初めてGoogleで入る場合（メールで自動紐付け）を試すためのものです。</p>
+    <input id="gm2-email" type="email" placeholder="email">
+    <input id="gm2-password" type="password" placeholder="password (8文字以上)">
+    <button id="gm2-register">既存ユーザーを作る</button>
+  </details>
+</section>
+
+<section>
+  <h2>4. FinanSu（examples/finansu-mock）</h2>
+  <input id="fs-url" value="http://localhost:3200" size="28">
+  <div>
+    <button id="fs-firebase" disabled>GoogleでFinanSuにログイン</button>
+    <button id="fs-current">current_user</button>
+  </div>
+  <div id="fs-signup" class="signup" hidden>
+    <strong>FinanSu 新規登録</strong>
+    <div><input id="fs-su-email" readonly size="32"> <span class="note">（Googleのメールで固定）</span></div>
+    <div>
+      <input id="fs-su-name" placeholder="名前">
+      <select id="fs-su-bureau">
+        <option value="1">総務局</option><option value="2">渉外局</option><option value="3">財務局</option>
+        <option value="4">企画局</option><option value="5">制作局</option><option value="6">情報局</option>
+        <option value="7">産学局</option>
+      </select>
+    </div>
+    <button id="fs-su-submit">登録してログイン</button>
+  </div>
+  <p>結果: <span id="fs-verdict">-</span></p>
+  <pre id="fs-out"></pre>
+  <details>
+    <summary>（テスト用）パスワードで登録済みの既存FinanSuユーザーを作る</summary>
+    <p class="note">既にFinanSuアカウントを持っている人が、初めてGoogleで入る場合（メールで自動紐付け）を試すためのものです。</p>
+    <input id="fs-email" type="email" placeholder="email">
     <input id="fs-password" type="password" placeholder="password">
     <select id="fs-role">
       <option value="1">1: user</option><option value="2">2: admin</option>
       <option value="3">3: Finance Director</option><option value="4">4: Finance Staff</option>
     </select>
-    <button id="fs-register">FinanSuにパスワードで新規登録</button>
-  </div>
-  <p><small>② FirebaseのID TokenでFinanSuにログイン → FinanSuの既存accessTokenが返る</small></p>
-  <button id="fs-firebase" disabled>FirebaseでFinanSuにログイン</button>
-  <p><small>③ 返ってきたaccessTokenで既存APIを叩く (権限はFinanSuのroleIDのまま)</small></p>
-  <button id="fs-current">current_user</button>
-  <p>結果: <span id="fs-verdict">-</span></p>
-  <pre id="fs-out"></pre>
+    <button id="fs-register">既存ユーザーを作る</button>
+  </details>
 </section>
 
 <script type="module">
@@ -103,39 +129,11 @@ import { firebaseConfig } from "./firebase-config.js";
 const auth = getAuth(initializeApp(firebaseConfig));
 const $ = (id) => document.getElementById(id);
 const show = (id, v) => { $(id).textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
+const verdict = (id, ok, text) => { $(id).innerHTML = ""; const s = document.createElement("span"); s.className = ok ? "ok" : "ng"; s.textContent = text; $(id).appendChild(s); };
 const guard = (fn) => async () => { try { await fn(); } catch (e) { alert(e.message); } };
+const idToken = () => auth.currentUser.getIdToken(true);
 
-$("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()));
-$("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
-$("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
-$("signout").onclick = guard(() => signOut(auth));
-$("send-verify").onclick = guard(async () => {
-  if (!auth.currentUser) throw new Error("先にログインしてください");
-  await sendEmailVerification(auth.currentUser);
-  alert("確認メールを送信しました。リンクを開いたあと、このページで再度検証してください。");
-});
-
-onAuthStateChanged(auth, async (user) => {
-  $("verify").disabled = !user;
-  $("gm2-firebase").disabled = !user;
-  $("fs-firebase").disabled = !user;
-  $("state").textContent = user ? `${user.email} (uid: ${user.uid}, email_verified: ${user.emailVerified})` : "未ログイン";
-  show("token", user ? await user.getIdToken() : "");
-  show("verify-out", ""); $("verdict").textContent = "-";
-});
-
-$("verify").onclick = guard(async () => {
-  const res = await fetch("/v1/auth/verify", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
-  });
-  const body = await res.json();
-  const ok = res.status === 200;
-  $("verdict").innerHTML = `<span class="${ok ? "ok" : "ng"}">HTTP ${res.status} ${ok ? "ログイン許可" : "ログイン不可"}</span>`;
-  show("verify-out", body);
-});
-
+// ---- 1. whitelist ----
 const admin = async (path, method = "GET", body) => {
   const res = await fetch(path, {
     method,
@@ -149,99 +147,135 @@ const admin = async (path, method = "GET", body) => {
 };
 
 async function reload() {
-  const rows = await admin("/v1/admin/whitelist" + ($("filter").value ? `?status=${$("filter").value}` : ""));
+  const rows = await admin("/v1/admin/whitelist");
   $("rows").innerHTML = "";
-  for (const e of rows || []) {
+  for (const e of rows) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td></td><td></td><td></td>`;
+    tr.innerHTML = "<td></td><td></td><td></td>";
     tr.children[0].textContent = e.email;
-    tr.children[1].textContent = e.status;
-    for (const [label, action] of [["承認", "approve"], ["拒否", "reject"]]) {
-      const b = document.createElement("button");
-      b.textContent = label;
-      b.onclick = guard(async () => { await admin(`/v1/admin/whitelist/${action}`, "POST", { email: e.email, approved_by: "test-page" }); await reload(); });
-      tr.children[2].appendChild(b);
-    }
+    tr.children[1].textContent = e.added_by;
+    const b = document.createElement("button");
+    b.textContent = "削除";
+    b.onclick = guard(async () => { await admin(`/v1/admin/whitelist/${encodeURIComponent(e.email)}`, "DELETE"); await reload(); });
+    tr.children[2].appendChild(b);
     $("rows").appendChild(tr);
   }
-  show("admin-out", `${(rows || []).length} 件`);
+  show("admin-out", `${rows.length} 件`);
 }
 $("reload").onclick = guard(reload);
-$("add").onclick = guard(async () => { await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value }); await reload(); });
+$("add").onclick = guard(async () => {
+  await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value, added_by: $("added-by").value });
+  $("add-email").value = "";
+  await reload();
+});
 
+// ---- 2. Firebase login ----
+$("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()));
+$("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
+$("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
+$("signout").onclick = guard(() => signOut(auth));
+$("send-verify").onclick = guard(async () => {
+  if (!auth.currentUser) throw new Error("先にログインしてください");
+  await sendEmailVerification(auth.currentUser);
+  alert("確認メールを送信しました。リンクを開いたあと、もう一度確認してください。");
+});
+
+onAuthStateChanged(auth, async (user) => {
+  for (const id of ["verify", "gm2-firebase", "fs-firebase"]) $(id).disabled = !user;
+  $("state").textContent = user ? `${user.email} (email_verified: ${user.emailVerified})` : "未ログイン";
+  show("token", user ? await user.getIdToken() : "");
+  show("verify-out", ""); $("verdict").textContent = "";
+  $("gm2-signup").hidden = true; $("fs-signup").hidden = true;
+});
+
+const statusText = { allowed: "通過", not_whitelisted: "名簿に未登録", email_unverified: "メール未確認" };
+$("verify").onclick = guard(async () => {
+  const res = await fetch("/v1/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: await idToken() }),
+  });
+  const body = await res.json();
+  verdict("verdict", res.ok, `HTTP ${res.status} ${statusText[body.status] || body.error || ""}`);
+  show("verify-out", body);
+});
+
+// ---- 3. GM2 ----
 let gm2Headers = null;
-const gm2 = async (path, init = {}) => {
-  const res = await fetch($("gm2-url").value.replace(/\/$/, "") + path, init);
+const gm2 = async (method, path, init = {}) => {
+  const res = await fetch($("gm2-url").value.replace(/\/$/, "") + path, { method, ...init });
   const body = await res.json().catch(() => null);
-  const ok = res.ok;
-  $("gm2-verdict").innerHTML = `<span class="${ok ? "ok" : "ng"}">${init.method || "GET"} ${path} → HTTP ${res.status}</span>`;
+  verdict("gm2-verdict", res.ok, `${method} ${path} → HTTP ${res.status}`);
   return { res, body };
 };
-
-$("gm2-register").onclick = guard(async () => {
-  const email = $("gm2-email").value || auth.currentUser?.email;
-  const password = $("gm2-password").value;
-  const { body } = await gm2("/api/auth", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: email, email, password, password_confirmation: password }),
-  });
-  show("gm2-out", body);
-});
+const gm2Json = (body) => ({ headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const gm2Keep = (res, body) => {
+  gm2Headers = res.ok ? Object.fromEntries(["access-token", "client", "uid"].map((k) => [k, res.headers.get(k)])) : null;
+  show("gm2-out", res.ok ? { gm2_token_headers: gm2Headers, body } : body);
+};
 
 $("gm2-firebase").onclick = guard(async () => {
-  const { res, body } = await gm2("/api/auth/firebase_sign_in", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
-  });
-  gm2Headers = res.ok
-    ? Object.fromEntries(["access-token", "client", "uid"].map((k) => [k, res.headers.get(k)]))
-    : null;
-  show("gm2-out", { gm2_token_headers: gm2Headers, body });
+  $("gm2-signup").hidden = true;
+  const { res, body } = await gm2("POST", "/api/auth/firebase_sign_in", gm2Json({ id_token: await idToken() }));
+  if (res.status === 404 && body?.registration_required) {
+    $("gm2-su-email").value = body.email;
+    $("gm2-signup").hidden = false;
+  }
+  gm2Keep(res, body);
 });
-
+$("gm2-su-submit").onclick = guard(async () => {
+  const { res, body } = await gm2("POST", "/api/auth/firebase_sign_up", gm2Json({ id_token: await idToken(), name: $("gm2-su-name").value }));
+  if (res.ok) $("gm2-signup").hidden = true;
+  gm2Keep(res, body);
+});
 const gm2Get = (path) => guard(async () => {
-  if (!gm2Headers) throw new Error("先に「FirebaseでGM2にログイン」してください");
-  const { body } = await gm2(path, { headers: gm2Headers });
-  show("gm2-out", body);
+  if (!gm2Headers) throw new Error("先に「GoogleでGM2にログイン」してください");
+  show("gm2-out", (await gm2("GET", path, { headers: gm2Headers })).body);
 });
 $("gm2-current").onclick = gm2Get("/api/v1/users/current");
 $("gm2-staff").onclick = gm2Get("/api/v1/staff/ping");
+$("gm2-register").onclick = guard(async () => {
+  const email = $("gm2-email").value, password = $("gm2-password").value;
+  show("gm2-out", (await gm2("POST", "/api/auth", gm2Json({ name: email, email, password, password_confirmation: password }))).body);
+});
 
+// ---- 4. FinanSu ----
 let fsToken = null;
 const fs = async (method, path, init = {}) => {
   const res = await fetch($("fs-url").value.replace(/\/$/, "") + path, { method, ...init });
   const body = await res.json().catch(() => null);
-  $("fs-verdict").innerHTML = `<span class="${res.ok ? "ok" : "ng"}">${method} ${path.split("?")[0]} → HTTP ${res.status}</span>`;
-  if (!res.ok) throw Object.assign(new Error(body?.message || `HTTP ${res.status}`), { shown: true, body });
-  return body;
+  verdict("fs-verdict", res.ok, `${method} ${path.split("?")[0]} → HTTP ${res.status}`);
+  return { res, body };
 };
-const fsGuard = (fn) => async () => {
-  try { await fn(); } catch (e) { e.shown ? show("fs-out", e.body) : alert(e.message); }
-};
+const fsJson = (body) => ({ headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const fsKeep = (res, body) => { fsToken = res.ok ? body.accessToken : null; show("fs-out", body); };
 
-$("fs-register").onclick = fsGuard(async () => {
-  const email = $("fs-email").value || auth.currentUser?.email;
+$("fs-firebase").onclick = guard(async () => {
+  $("fs-signup").hidden = true;
+  const { res, body } = await fs("POST", "/mail_auth/firebase_signin", fsJson({ id_token: await idToken() }));
+  if (res.status === 404 && body?.registrationRequired) {
+    $("fs-su-email").value = body.email;
+    $("fs-signup").hidden = false;
+  }
+  fsKeep(res, body);
+});
+$("fs-su-submit").onclick = guard(async () => {
+  const { res, body } = await fs("POST", "/mail_auth/firebase_signup", fsJson({
+    id_token: await idToken(), name: $("fs-su-name").value, bureau_id: Number($("fs-su-bureau").value),
+  }));
+  if (res.ok) $("fs-signup").hidden = true;
+  fsKeep(res, body);
+});
+$("fs-current").onclick = guard(async () => {
+  if (!fsToken) throw new Error("先に「GoogleでFinanSuにログイン」してください");
+  show("fs-out", (await fs("GET", "/current_user", { headers: { "Access-Token": fsToken } })).body);
+});
+$("fs-register").onclick = guard(async () => {
+  const email = $("fs-email").value;
   const q = (o) => "?" + new URLSearchParams(o);
-  const user = await fs("POST", "/users" + q({ name: email, bureau_id: 1, role_id: $("fs-role").value }));
-  const token = await fs("POST", "/mail_auth/signup" + q({ email, password: $("fs-password").value, user_id: user.id }));
-  show("fs-out", { user, password_login_token: token });
-});
-
-$("fs-firebase").onclick = fsGuard(async () => {
-  fsToken = null;
-  const body = await fs("POST", "/mail_auth/firebase_signin", {
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: await auth.currentUser.getIdToken(true) }),
-  });
-  fsToken = body.accessToken;
-  show("fs-out", body);
-});
-
-$("fs-current").onclick = fsGuard(async () => {
-  if (!fsToken) throw new Error("先に「FirebaseでFinanSuにログイン」してください");
-  show("fs-out", await fs("GET", "/current_user", { headers: { "Access-Token": fsToken } }));
+  const { res, body: user } = await fs("POST", "/users" + q({ name: email, bureau_id: 1, role_id: $("fs-role").value }));
+  if (!res.ok) return show("fs-out", user);
+  show("fs-out", (await fs("POST", "/mail_auth/signup" + q({ email, password: $("fs-password").value, user_id: user.id }))).body);
 });
 </script>
 </body>

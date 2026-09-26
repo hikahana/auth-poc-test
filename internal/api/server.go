@@ -6,25 +6,30 @@
 package api
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
 
+type TokenVerifier interface {
+	Verify(ctx context.Context, idToken string) (firebaseauth.Identity, error)
+}
+
 type Server struct {
-	verifier    *firebaseauth.Verifier
+	verifier    TokenVerifier
 	whitelist   *whitelist.Store
 	adminAPIKey string
 	webDir      string
 	logger      *slog.Logger
 }
 
-func NewServer(verifier *firebaseauth.Verifier, wl *whitelist.Store, adminAPIKey, webDir string, logger *slog.Logger) *Server {
+func NewServer(verifier TokenVerifier, wl *whitelist.Store, adminAPIKey, webDir string, logger *slog.Logger) *Server {
 	return &Server{verifier: verifier, whitelist: wl, adminAPIKey: adminAPIKey, webDir: webDir, logger: logger}
 }
 
@@ -35,15 +40,19 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /v1/admin/whitelist", s.requireAdmin(s.handleListWhitelist))
 	mux.HandleFunc("POST /v1/admin/whitelist", s.requireAdmin(s.handleAddWhitelist))
-	mux.HandleFunc("POST /v1/admin/whitelist/approve", s.requireAdmin(s.handleApprove))
-	mux.HandleFunc("POST /v1/admin/whitelist/reject", s.requireAdmin(s.handleReject))
+	mux.HandleFunc("DELETE /v1/admin/whitelist/{email}", s.requireAdmin(s.handleRemoveWhitelist))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	if s.webDir != "" {
-		mux.Handle("GET /", http.FileServer(http.Dir(s.webDir)))
+		files := http.FileServer(http.Dir(s.webDir))
+		mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Revalidate every time so an edited test page is never served stale.
+			w.Header().Set("Cache-Control", "no-cache")
+			files.ServeHTTP(w, r)
+		}))
 	}
 
 	return mux
@@ -70,13 +79,16 @@ type verifyResponse struct {
 	Status        string `json:"status"`
 }
 
-const statusEmailUnverified = "email_unverified"
+const (
+	StatusAllowed         = "allowed"
+	StatusNotWhitelisted  = "not_whitelisted"
+	StatusEmailUnverified = "email_unverified"
+)
 
 // handleVerify is the endpoint every client product calls after Firebase
 // Client SDK hands it an ID token. It verifies the token's signature/expiry
-// with Firebase, then checks (and lazily registers) the email against the
-// whitelist. Only status=approved should be treated as a successful login by
-// the caller.
+// with Firebase, then checks the email against the pre-registered whitelist.
+// Only status=allowed should be treated as a successful login by the caller.
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	var req verifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IDToken == "" {
@@ -96,32 +108,30 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// not prove ownership of the address. Without this check anyone could
 	// register an approved address in Firebase and pass the whitelist.
 	if identity.Email == "" || !identity.EmailVerified {
-		resp.Status = statusEmailUnverified
+		resp.Status = StatusEmailUnverified
 		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 
-	entry, err := s.whitelist.EnsureEntry(r.Context(), identity.Email)
+	allowed, err := s.whitelist.IsAllowed(r.Context(), identity.Email)
 	if err != nil {
 		s.logger.Error("whitelist lookup failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "whitelist lookup failed")
 		return
 	}
 
-	resp.Status = string(entry.Status)
-
-	if entry.Status != whitelist.StatusApproved {
+	if !allowed {
+		resp.Status = StatusNotWhitelisted
 		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 
+	resp.Status = StatusAllowed
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListWhitelist(w http.ResponseWriter, r *http.Request) {
-	status := whitelist.Status(r.URL.Query().Get("status"))
-
-	entries, err := s.whitelist.List(r.Context(), status)
+	entries, err := s.whitelist.List(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed")
 		return
@@ -131,17 +141,18 @@ func (s *Server) handleListWhitelist(w http.ResponseWriter, r *http.Request) {
 }
 
 type addWhitelistRequest struct {
-	Email string `json:"email"`
+	Email   string `json:"email"`
+	AddedBy string `json:"added_by"`
 }
 
 func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
 	var req addWhitelistRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
-		writeError(w, http.StatusBadRequest, "email is required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !strings.Contains(req.Email, "@") || req.AddedBy == "" {
+		writeError(w, http.StatusBadRequest, "email and added_by are required")
 		return
 	}
 
-	entry, err := s.whitelist.EnsureEntry(r.Context(), req.Email)
+	entry, err := s.whitelist.Add(r.Context(), req.Email, req.AddedBy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "insert failed")
 		return
@@ -150,33 +161,14 @@ func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, entry)
 }
 
-type reviewRequest struct {
-	Email      string `json:"email"`
-	ApprovedBy string `json:"approved_by"`
-}
-
-func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
-	s.review(w, r, whitelist.StatusApproved)
-}
-
-func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
-	s.review(w, r, whitelist.StatusRejected)
-}
-
-func (s *Server) review(w http.ResponseWriter, r *http.Request, status whitelist.Status) {
-	var req reviewRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.ApprovedBy == "" {
-		writeError(w, http.StatusBadRequest, "email and approved_by are required")
-		return
-	}
-
-	err := s.whitelist.SetStatus(r.Context(), req.Email, status, req.ApprovedBy)
-	if errors.Is(err, sql.ErrNoRows) {
+func (s *Server) handleRemoveWhitelist(w http.ResponseWriter, r *http.Request) {
+	err := s.whitelist.Remove(r.Context(), r.PathValue("email"))
+	if errors.Is(err, whitelist.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such whitelist entry")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
+		writeError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
 

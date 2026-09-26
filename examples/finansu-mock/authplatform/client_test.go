@@ -15,8 +15,8 @@ func TestVerifyMapsPlatformResponses(t *testing.T) {
 		wantStatus string
 		wantErr    bool
 	}{
-		{"approved", 200, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"approved"}`, "approved", false},
-		{"pending", 403, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"pending"}`, "pending", false},
+		{"allowed", 200, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"allowed"}`, StatusAllowed, false},
+		{"not whitelisted", 403, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"not_whitelisted"}`, "not_whitelisted", false},
 		{"unverified", 403, `{"sub":"u1","email":"a@example.com","email_verified":false,"status":"email_unverified"}`, "email_unverified", false},
 		{"invalid token", 401, `{"error":"invalid id token"}`, StatusInvalid, false},
 		{"platform failure", 500, `{"error":"boom"}`, "", true},

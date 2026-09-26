@@ -53,6 +53,40 @@ func (r *UserRepository) LinkAuthPlatformUserID(c context.Context, userID int, s
 	return n == 1, err
 }
 
+// RegisterFirebaseUser creates the users row (already linked to the auth
+// platform) and its mail_auth row in one transaction, so a failed insert never
+// leaves a user that cannot sign in.
+func (r *UserRepository) RegisterFirebaseUser(c context.Context, name string, bureauID, roleID int, sub, email, hashedPassword string) (userID, mailAuthID int, err error) {
+	tx, err := r.db.BeginTx(c, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(c,
+		`INSERT INTO users (name, bureau_id, role_id, auth_platform_user_id) VALUES (?, ?, ?, ?)`,
+		name, bureauID, roleID, sub)
+	if err != nil {
+		return 0, 0, err
+	}
+	uid, err := res.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	res, err = tx.ExecContext(c,
+		`INSERT INTO mail_auth (email, password, user_id) VALUES (?, ?, ?)`, email, hashedPassword, uid)
+	if err != nil {
+		return 0, 0, err
+	}
+	mid, err := res.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return int(uid), int(mid), tx.Commit()
+}
+
 type MailAuthRepository struct{ db *sql.DB }
 
 func NewMailAuthRepository(db *sql.DB) *MailAuthRepository { return &MailAuthRepository{db} }

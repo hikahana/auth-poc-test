@@ -7,8 +7,8 @@ require 'net/http'
 # verification (and the email whitelist check) to the platform.
 module AuthPlatformClient
   Result = Struct.new(:status, :sub, :email, :email_verified, keyword_init: true) do
-    def approved?
-      status == 'approved'
+    def allowed?
+      status == 'allowed'
     end
 
     def invalid?
