@@ -59,8 +59,15 @@ ID Tokenは、ほかの `mail_auth` 系ルートのようなクエリパラメ�
 
 認証基盤（リポジトリ直下、`:8080`）を先に起動しておきます。
 
+FinanSuを認証基盤にプロダクトとして登録し、発行されたIDと秘密鍵をこのディレクトリの `.env` に置きます
+（`.env.example` 参照。管理画面の「3. プロダクト」で登録した値を書いてもよい）。
+
 ```bash
-go run .
+(cd ../.. && go run ./cmd/register-client FinanSu) > .env
+```
+
+```bash
+set -a && . ./.env && set +a && go run .
 ```
 
 モックは **http://localhost:3200** で起動します（本物のFinanSu APIの1323番とは被りません）。
@@ -70,10 +77,10 @@ go run .
 
 1. 「1.」でGoogleログインする
 2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
-3. 「4. FinanSu」の「GoogleでFinanSuにログイン」を押す。FinanSuにアカウントがなければ、メール固定の新規登録フォームが出るので、名前と局を入れて登録する
+3. 「5. FinanSu」の「GoogleでFinanSuにログイン」を押す。FinanSuにアカウントがなければ、メール固定の新規登録フォームが出るので、名前と局を入れて登録する
 4. 「current_user」で `authPlatformUserID` が入り、`roleID` が 1（user）になっていることを確認する
 
-既にFinanSuアカウントを持っている人が初めてGoogleで入る場合（メールで自動紐付け）は、「4.」の
+既にFinanSuアカウントを持っている人が初めてGoogleで入る場合（メールで自動紐付け）は、「5.」の
 「（テスト用）既存FinanSuユーザーを作る」で先にパスワード登録しておくと試せます。
 
 テストは次のコマンドで実行できます。
@@ -91,7 +98,7 @@ go test ./...
 | `api/externals/repository/` | `user_repository` に `FindByAuthPlatformUserID`・`LinkAuthPlatformUserID`・`RegisterFirebaseUser`（トランザクション）、`mail_auth_repository` に `FindMailAuthByUserID` を追加 |
 | `api/internals/usecase/` | `firebase_auth_usecase.go` と `authplatform` クライアントを追加し、wireのプロバイダに登録 |
 | `api/externals/handler/` | `PostMailAuthFirebaseSignin` と `PostMailAuthFirebaseSignup` を追加 |
-| 環境変数 | `AUTH_PLATFORM_URL` |
+| 環境変数 | `AUTH_PLATFORM_URL`、`AUTH_PLATFORM_CLIENT_ID`、`AUTH_PLATFORM_CLIENT_SECRET`（認証基盤でFinanSuを登録して発行） |
 | フロント（`view/next-project`） | 下記 |
 
 フロントの「Googleでログイン」ボタンは、Firebase SDKでID Tokenを取得して `/mail_auth/firebase_signin` に送り、次のように分岐します。

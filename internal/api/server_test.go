@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
 	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
@@ -37,6 +38,9 @@ const seededAdmin = "admin@example.com"
 type testEnv struct {
 	srv *httptest.Server
 	wl  *whitelist.Store
+	cl  *clients.Store
+	// credentials of a registered product ("GM2") used by verify
+	clientID, clientSecret string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -47,15 +51,26 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	ctx := context.Background()
 	wl := whitelist.New(db)
-	if _, err := wl.Add(context.Background(), seededAdmin, whitelist.RoleAdmin, "seed"); err != nil {
+	if _, err := wl.Add(ctx, seededAdmin, whitelist.RoleAdmin, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	cl := clients.New(db)
+	gm2, secret, err := cl.Create(ctx, "GM2")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	s := NewServer(fakeVerifier{}, wl, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewServer(Deps{
+		Verifier:  fakeVerifier{},
+		Whitelist: wl,
+		Clients:   cl,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	srv := httptest.NewServer(s.Routes())
 	t.Cleanup(srv.Close)
-	return &testEnv{srv: srv, wl: wl}
+	return &testEnv{srv: srv, wl: wl, cl: cl, clientID: gm2.ID, clientSecret: secret}
 }
 
 // as sends a request signed in (fake ID token) as `who`, or anonymously when
@@ -84,11 +99,28 @@ func (e *testEnv) raw(t *testing.T, who, method, path, body string) (int, []byte
 	return res.StatusCode, b
 }
 
+// verifyWith calls verify as a product with the given client credentials.
+func (e *testEnv) verifyWith(t *testing.T, clientID, clientSecret, token string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest("POST", e.srv.URL+"/v1/auth/verify", strings.NewReader(`{"id_token":"`+token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if clientID != "" {
+		req.SetBasicAuth(clientID, clientSecret)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	status, _ := body["status"].(string)
+	return res.StatusCode, status
+}
+
 func (e *testEnv) verify(t *testing.T, token string) (int, string) {
 	t.Helper()
-	code, body := e.as(t, "", "POST", "/v1/auth/verify", `{"id_token":"`+token+`"}`)
-	status, _ := body["status"].(string)
-	return code, status
+	return e.verifyWith(t, e.clientID, e.clientSecret, token)
 }
 
 func TestVerifyAllowsOnlyRegisteredVerifiedEmails(t *testing.T) {
@@ -166,6 +198,11 @@ func TestAdminRoutesRequireTheAdminRole(t *testing.T) {
 		{"POST", "/v1/admin/whitelist", `{"email":"x@example.com"}`},
 		{"PATCH", "/v1/admin/whitelist/member@example.com", `{"role":"admin"}`},
 		{"DELETE", "/v1/admin/whitelist/member@example.com", ""},
+		{"GET", "/v1/admin/clients", ""},
+		{"POST", "/v1/admin/clients", `{"name":"X"}`},
+		{"PATCH", "/v1/admin/clients/" + e.clientID, `{"is_active":false}`},
+		{"POST", "/v1/admin/clients/" + e.clientID + "/secret", ""},
+		{"GET", "/v1/admin/logins", ""},
 	}
 
 	for _, c := range callers {

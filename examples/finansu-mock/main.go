@@ -36,7 +36,11 @@ func main() {
 	userRep := repository.NewUserRepository(db)
 	mailAuthRep := repository.NewMailAuthRepository(db)
 	sessionRep := repository.NewSessionRepository(db)
-	verifier := authplatform.NewClient(getenv("AUTH_PLATFORM_URL", "http://localhost:8080"))
+	verifier := authplatform.NewClient(
+		getenv("AUTH_PLATFORM_URL", "http://localhost:8080"),
+		os.Getenv("AUTH_PLATFORM_CLIENT_ID"),
+		os.Getenv("AUTH_PLATFORM_CLIENT_SECRET"),
+	)
 
 	h := handler.New(
 		usecase.NewMailAuthUseCase(mailAuthRep, sessionRep),

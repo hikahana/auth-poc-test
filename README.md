@@ -43,6 +43,23 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
    go run ./cmd/server
    ```
 
+6. 認証基盤を呼ぶプロダクトを登録し、出力されたIDと秘密鍵を各プロダクトの環境変数に設定する
+   （管理画面の「3. プロダクト」からも登録できる。秘密鍵は発行時に一度だけ表示される）
+
+   ```bash
+   go run ./cmd/register-client GM2 > examples/gm2-mock/.env
+   go run ./cmd/register-client FinanSu > examples/finansu-mock/.env
+   ```
+
+## プロダクト（クライアント）とログイン記録
+
+- `/v1/auth/verify` を呼べるのは、登録済みで有効なプロダクトだけ。プロダクトはIDと秘密鍵をHTTP Basic認証で送る
+- 秘密鍵は認証基盤にハッシュだけを保存する。忘れたら再発行する（再発行すると古い秘密鍵はすぐ使えなくなる）
+- プロダクトを停止すると、そのプロダクトからの `verify` はすべて401になる
+- `verify` で `allowed` を返すたびに、「どのログイン（FirebaseのユーザーID）が、どのプロダクトに、最初と最後にいつログインしたか」を記録する。
+  記録できなかった場合はログインを通さない（後で無効化できないログインを作らないため）
+- 認証基盤はセッションを持たない。この記録は、名簿から消した人のセッションを各プロダクトに消させるために使う
+
 ## ホワイトリスト（名簿）
 
 - 運営が、ログインを許可するメールアドレスを事前に登録する。載っているかどうかだけを見る
@@ -62,13 +79,20 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 
 | メソッド | パス | 用途 |
 |---|---|---|
-| POST | `/v1/auth/verify` | 各プロダクトのサーバーが呼ぶ。Firebase ID Tokenを検証し、名簿に載っているかを返す |
+| POST | `/v1/auth/verify` | 各プロダクトのサーバーが呼ぶ（要Basic認証）。Firebase ID Tokenを検証し、名簿に載っているかを返す |
 | GET | `/v1/admin/whitelist` | 名簿の一覧。管理者のみ |
 | POST | `/v1/admin/whitelist` | 名簿に登録（`{"email", "role"}`。`role` 省略時は `member`）。管理者のみ |
 | PATCH | `/v1/admin/whitelist/{email}` | 役割の変更（`{"role"}`）。管理者のみ |
 | DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除。管理者のみ |
+| GET | `/v1/admin/clients` | プロダクトの一覧（秘密鍵は含まない）。管理者のみ |
+| POST | `/v1/admin/clients` | プロダクトの登録（`{"name"}`）。応答にだけ `client_secret` が入る。管理者のみ |
+| PATCH | `/v1/admin/clients/{id}` | 停止・再開（`{"is_active"}`）。管理者のみ |
+| POST | `/v1/admin/clients/{id}/secret` | 秘密鍵の再発行。管理者のみ |
+| GET | `/v1/admin/logins` | ログイン記録（`?email=` で絞り込み可）。管理者のみ |
 
 管理者のみのAPIは、ログインしていなければ401、管理者でなければ403を返す。最後の管理者を削除・降格しようとすると409。
+`verify` はプロダクトの認証情報が無い・間違っている・停止中のとき、`WWW-Authenticate` ヘッダ付きの401を返す
+（ID Tokenが不正な401と区別できるように）。
 
 `POST /v1/auth/verify` の応答の `status`:
 
@@ -87,9 +111,10 @@ Firebaseアカウントを作るだけで通過できてしまいます。
 `go run ./cmd/server` で起動したあと http://localhost:8080/ を開く（`web/`をこのサーバーが配信する）。
 `web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定を入れる。
 
-1. 「1.」で、`seed-admin` で登録したアカウントでGoogleログインする（「2.」に名簿が表示される）
-2. 「2.」で自分のメールアドレスを名簿に登録し、「1.」の「認証基盤で確認」が `allowed`（200）になることを確認する
-3. 「3. GM2」「4. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
+1. 「1.」で、`seed-admin` で登録したアカウントでGoogleログインする（「2.」に名簿、「3.」にプロダクトが表示される）
+2. 必要なら「2.」でほかのメンバーを名簿に登録する（管理者は最初から名簿に載っている）
+3. 「4. GM2」「5. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
+4. 「2.」の「ログインしたプロダクト」に、ログインしたプロダクトが記録されていることを確認する
 
 ## プロダクトへの組み込み例
 
@@ -102,6 +127,4 @@ Googleから新規登録したアカウントは、各プロダクトで一番�
 
 ## 未実装（PoCのスコープ外）
 
-- `/v1/auth/verify` の呼び出し元の認証（`clients`テーブルでのclient_id/secret確認）
-- `clients` / `user_client_links` テーブル（手順書3節の設計はまだコード化していない）
 - SQLite以外のDB（本番想定ならPostgres等への差し替えが必要）

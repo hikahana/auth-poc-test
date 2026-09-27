@@ -4,6 +4,10 @@ services:
     ports:
       # 3000 is left free for a locally running real GM2 API.
       - "3100:3000"
+    # AUTH_PLATFORM_CLIENT_ID / AUTH_PLATFORM_CLIENT_SECRET (see .env.example)
+    env_file:
+      - path: .env
+        required: false
     environment:
       AUTH_PLATFORM_URL: http://host.docker.internal:8080
       CORS_ORIGINS: http://localhost:8080

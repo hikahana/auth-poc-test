@@ -50,6 +50,13 @@ GM2が返すトークンはパスワードログイン（`POST /api/auth/sign_in
 
 認証基盤（リポジトリ直下）を先に起動しておきます（`:8080`）。
 
+GM2を認証基盤にプロダクトとして登録し、発行されたIDと秘密鍵をこのディレクトリの `.env` に置きます
+（`.env.example` 参照。管理画面の「3. プロダクト」で登録した値を書いてもよい）。
+
+```bash
+(cd ../.. && go run ./cmd/register-client GM2) > .env
+```
+
 ```bash
 docker compose up -d --build
 ```
@@ -61,11 +68,11 @@ seedで `manager@example.com` / `staff@example.com` / `user@example.com`（パ�
 
 1. 「1.」でGoogleログインする
 2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
-3. 「3. GM2」の「GoogleでGM2にログイン」を押す。GM2にアカウントがなければ、メール固定の新規登録フォームが出るので、名前を入れて登録する
+3. 「4. GM2」の「GoogleでGM2にログイン」を押す。GM2にアカウントがなければ、メール固定の新規登録フォームが出るので、名前を入れて登録する
 4. 「現在のユーザー」で `auth_platform_user_id` が入り、`role_id` が 3（user）になっていることを確認する
 5. 「staff専用API」はuserロールなので403になる。ロールを上げると200になる
 
-既にGM2アカウントを持っている人が初めてGoogleで入る場合（メールで自動紐付け）は、「3.」の
+既にGM2アカウントを持っている人が初めてGoogleで入る場合（メールで自動紐付け）は、「4.」の
 「（テスト用）既存GM2ユーザーを作る」で先にパスワード登録しておくと試せます。
 
 ```bash
@@ -88,7 +95,7 @@ GM2に持っていくのは以下だけです。既存ファイルの変更は`r
 | `app/services/auth_platform_client.rb` | 認証基盤の`/v1/auth/verify`を呼ぶクライアント |
 | `app/controllers/api/auth/firebase_sessions_controller.rb` | Googleログインと新規登録のエンドポイント |
 | `config/routes.rb` | `namespace :api { namespace :auth { post 'firebase_sign_in'; post 'firebase_sign_up' } }` を追加 |
-| 環境変数 | `AUTH_PLATFORM_URL` |
+| 環境変数 | `AUTH_PLATFORM_URL`、`AUTH_PLATFORM_CLIENT_ID`、`AUTH_PLATFORM_CLIENT_SECRET`（認証基盤でGM2を登録して発行） |
 | `test/integration/firebase_sign_in_test.rb` | そのまま移植可能 |
 
 `api/auth/`配下はGM2の`ApiAccessControlRegistry`で未認証の対象外（excluded）になっているので、

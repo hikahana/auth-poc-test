@@ -24,14 +24,24 @@ module AuthPlatformClient
 
   def verify(id_token)
     uri = URI.join(base_url, '/v1/auth/verify')
+    request = Net::HTTP::Post.new(uri.path, 'Content-Type' => 'application/json')
+    request.basic_auth(ENV.fetch('AUTH_PLATFORM_CLIENT_ID', ''), ENV.fetch('AUTH_PLATFORM_CLIENT_SECRET', ''))
+    request.body = { id_token: id_token }.to_json
+
     response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
                                                    open_timeout: 3, read_timeout: 5) do |http|
-      http.post(uri.path, { id_token: id_token }.to_json, 'Content-Type' => 'application/json')
+      http.request(request)
     end
 
     case response
     when Net::HTTPOK, Net::HTTPForbidden then result_from(JSON.parse(response.body))
-    when Net::HTTPUnauthorized then Result.new(status: 'invalid')
+    # The platform challenges with WWW-Authenticate only when GM2's own client
+    # credentials are wrong — a server misconfiguration, not the user's fault.
+    when Net::HTTPUnauthorized
+      return Result.new(status: 'invalid') unless response['WWW-Authenticate']
+
+      Rails.logger.error('[AuthPlatformClient] client credentials rejected; check AUTH_PLATFORM_CLIENT_ID/SECRET')
+      Result.new(status: 'error')
     else
       Rails.logger.warn("[AuthPlatformClient] unexpected response #{response.code}")
       Result.new(status: 'error')

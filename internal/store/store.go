@@ -20,6 +20,27 @@ var migrations = []string{
 	// 2: whitelist entries carry the platform's own role (who may manage it).
 	`ALTER TABLE allowed_emails ADD COLUMN role TEXT NOT NULL DEFAULT 'member'
 		CHECK (role IN ('member', 'admin'))`,
+	// 3: products allowed to call /v1/auth/verify. Only a hash of the secret is kept.
+	`CREATE TABLE clients (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL UNIQUE,
+		secret_hash TEXT NOT NULL,
+		is_active   BOOLEAN NOT NULL DEFAULT 1,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	// 4: which login (Firebase UID) has signed in to which product. The
+	// platform keeps no session; this record is what lets it tell each
+	// product to drop a user's sessions later.
+	`CREATE TABLE user_client_links (
+		sub           TEXT NOT NULL,
+		client_id     TEXT NOT NULL REFERENCES clients(id),
+		email         TEXT NOT NULL,
+		first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (sub, client_id)
+	)`,
+	// 5: revocation looks links up by email.
+	`CREATE INDEX idx_user_client_links_email ON user_client_links (email)`,
 }
 
 func Open(path string) (*sql.DB, error) {

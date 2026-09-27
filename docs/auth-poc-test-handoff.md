@@ -75,8 +75,8 @@
 | テーブル | カラム | 備考 |
 |---|---|---|
 | `users` | `id`(uuid, PK) / `google_sub`(unique) / `email`(nullable, キャッシュ用) / `display_name` / `created_at` / `updated_at` | ※案Aを採用しFirebaseに全面移行する場合、このテーブルは不要になりFirebaseの`uid`をそのまま使う |
-| `clients` | `id`(uuid, PK) / `client_id`(unique) / `client_secret_hash` / `name`（例: "nutfesBingo"） / `redirect_uris` / `is_active` | 「どのサービスからのリクエストを受け付けるか」の管理台帳 |
-| `user_client_links` | `user_id`(FK) / `client_id`(FK) / `first_seen_at` / `last_seen_at` | ユーザーとプロダクトの多対多の利用ログ |
+| `clients` | `id`(PK, `cl_…`) / `name`(unique) / `secret_hash`(SHA-256) / `is_active` / `created_at` | 「どのサービスからのリクエストを受け付けるか」の管理台帳（2026-09-27実装。`verify` はBasic認証で登録済みプロダクトのみ受け付ける） |
+| `user_client_links` | `sub`(Firebase UID) / `client_id`(FK) / `email` / `first_seen_at` / `last_seen_at`（PK: sub + client_id） | ログインとプロダクトの多対多の利用ログ（2026-09-27実装）。認証基盤はセッションを持たず、この記録を名簿削除時の即時無効化に使う |
 | `allowed_emails`（ホワイトリスト） | `email`(PK, 小文字で保存) / `role`(member/admin) / `added_by` / `created_at` | ログイン許可の実体。運営が事前登録したメールだけを通す（2026-09-26決定。承認申請の仕組みは持たない）。`role=admin` の人が名簿を管理する（2026-09-27決定。最初の1人は `cmd/seed-admin` で登録） |
 
 ### 各プロダクト側（既存usersテーブルへの追加）

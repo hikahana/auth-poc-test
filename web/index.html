@@ -29,9 +29,6 @@
   <button id="google">Googleでログイン</button>
   <button id="signout">ログアウト</button>
   <p>状態: <span id="state">未ログイン</span></p>
-  <button id="verify" disabled>認証基盤で確認 (POST /v1/auth/verify)</button>
-  <span id="verdict"></span>
-  <pre id="verify-out"></pre>
   <details><summary>ID Token</summary><pre id="token"></pre></details>
   <details>
     <summary>メール/パスワードでのFirebaseログイン（任意）</summary>
@@ -56,12 +53,28 @@
     <button id="add">名簿に登録</button>
     <button id="reload">一覧を更新</button>
   </div>
-  <table><thead><tr><th>email</th><th>役割</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <table><thead><tr><th>email</th><th>役割</th><th>ログインしたプロダクト</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
   <pre id="admin-out"></pre>
 </section>
 
 <section>
-  <h2>3. GM2（examples/gm2-mock）</h2>
+  <h2>3. プロダクト（認証基盤を呼べるサービス）</h2>
+  <p class="note">ここに登録されたプロダクトだけが、ログイン確認（<code>/v1/auth/verify</code>）を呼べます。
+  登録すると発行されるIDと秘密鍵を、そのプロダクトのサーバーの環境変数
+  （<code>AUTH_PLATFORM_CLIENT_ID</code> / <code>AUTH_PLATFORM_CLIENT_SECRET</code>）に設定します。管理者のみ操作できます。</p>
+  <div>
+    <input id="client-name" placeholder="プロダクト名 (例: GM2)">
+    <button id="client-add">登録</button>
+  </div>
+  <div id="client-secret-box" class="signup" hidden>
+    <strong>発行された認証情報（この画面を閉じると秘密鍵は二度と表示できません）</strong>
+    <pre id="client-secret"></pre>
+  </div>
+  <table><thead><tr><th>名前</th><th>ID</th><th>状態</th><th></th></tr></thead><tbody id="client-rows"></tbody></table>
+</section>
+
+<section>
+  <h2>4. GM2（examples/gm2-mock）</h2>
   <input id="gm2-url" value="http://localhost:3100" size="28">
   <div>
     <button id="gm2-firebase" disabled>GoogleでGM2にログイン</button>
@@ -86,7 +99,7 @@
 </section>
 
 <section>
-  <h2>4. FinanSu（examples/finansu-mock）</h2>
+  <h2>5. FinanSu（examples/finansu-mock）</h2>
   <input id="fs-url" value="http://localhost:3200" size="28">
   <div>
     <button id="fs-firebase" disabled>GoogleでFinanSuにログイン</button>
@@ -149,12 +162,14 @@ const admin = async (path, method = "GET", body) => {
 };
 
 async function reload() {
-  const rows = await admin("/v1/admin/whitelist");
+  const [rows, logins] = await Promise.all([admin("/v1/admin/whitelist"), admin("/v1/admin/logins")]);
+  const loginsByEmail = {};
+  for (const l of logins) (loginsByEmail[l.email] ??= []).push(l);
   $("rows").innerHTML = "";
   for (const e of rows) {
     const path = `/v1/admin/whitelist/${encodeURIComponent(e.email)}`;
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
     tr.children[0].textContent = e.email;
 
     const role = document.createElement("select");
@@ -164,7 +179,10 @@ async function reload() {
       try { await admin(path, "PATCH", { role: role.value }); } finally { await reload(); }
     });
     tr.children[1].appendChild(role);
-    tr.children[2].textContent = e.added_by;
+    tr.children[2].textContent = (loginsByEmail[e.email] || [])
+      .map((l) => `${l.client_name}（最終 ${new Date(l.last_seen_at).toLocaleString()}）`).join("\n") || "-";
+    tr.children[2].style.whiteSpace = "pre-line";
+    tr.children[3].textContent = e.added_by;
 
     const del = document.createElement("button");
     del.textContent = "削除";
@@ -173,11 +191,51 @@ async function reload() {
       await admin(path, "DELETE");
       await reload();
     });
-    tr.children[3].appendChild(del);
+    tr.children[4].appendChild(del);
     $("rows").appendChild(tr);
   }
   show("admin-out", `${rows.length} 件`);
 }
+
+// ---- 3. products (clients) ----
+function showSecret(c) {
+  show("client-secret", `# ${c.name}\nAUTH_PLATFORM_CLIENT_ID=${c.id}\nAUTH_PLATFORM_CLIENT_SECRET=${c.client_secret}`);
+  $("client-secret-box").hidden = false;
+}
+
+async function reloadClients() {
+  const list = await admin("/v1/admin/clients");
+  $("client-rows").innerHTML = "";
+  for (const c of list) {
+    const path = `/v1/admin/clients/${encodeURIComponent(c.id)}`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td></td><td><code></code></td><td></td><td></td>";
+    tr.children[0].textContent = c.name;
+    tr.children[1].firstChild.textContent = c.id;
+    tr.children[2].textContent = c.is_active ? "有効" : "停止中";
+
+    const toggle = document.createElement("button");
+    toggle.textContent = c.is_active ? "停止" : "再開";
+    toggle.onclick = guard(async () => {
+      if (c.is_active && !confirm(`${c.name} を停止すると、このプロダクトではGoogleログインできなくなります。停止しますか？`)) return;
+      await admin(path, "PATCH", { is_active: !c.is_active });
+      await reloadClients();
+    });
+    const rotate = document.createElement("button");
+    rotate.textContent = "秘密鍵を再発行";
+    rotate.onclick = guard(async () => {
+      if (!confirm(`${c.name} の秘密鍵を再発行すると、今の秘密鍵はすぐ使えなくなります。再発行しますか？`)) return;
+      showSecret(await admin(`${path}/secret`, "POST"));
+    });
+    tr.children[3].append(toggle, rotate);
+    $("client-rows").appendChild(tr);
+  }
+}
+$("client-add").onclick = guard(async () => {
+  showSecret(await admin("/v1/admin/clients", "POST", { name: $("client-name").value }));
+  $("client-name").value = "";
+  await reloadClients();
+});
 $("reload").onclick = guard(reload);
 $("add").onclick = guard(async () => {
   await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value, role: $("add-role").value });
@@ -185,12 +243,13 @@ $("add").onclick = guard(async () => {
   await reload();
 });
 
-// Loads the list right after sign-in; a non-admin just sees why it is empty.
-async function loadWhitelistIfAdmin(user) {
-  $("rows").innerHTML = ""; show("admin-out", "");
+// Loads the admin lists right after sign-in; a non-admin just sees why they are empty.
+async function loadAdminViews(user) {
+  $("rows").innerHTML = ""; $("client-rows").innerHTML = ""; show("admin-out", "");
+  $("client-secret-box").hidden = true;
   if (!user) { $("admin-state").textContent = "未ログイン"; return; }
   try {
-    await reload();
+    await Promise.all([reload(), reloadClients()]);
     $("admin-state").textContent = `${user.email}（管理者として操作できます）`;
   } catch (e) {
     $("admin-state").textContent = `${user.email} は管理者ではありません（名簿は操作できません）`;
@@ -209,24 +268,11 @@ $("send-verify").onclick = guard(async () => {
 });
 
 onAuthStateChanged(auth, async (user) => {
-  for (const id of ["verify", "gm2-firebase", "fs-firebase"]) $(id).disabled = !user;
+  for (const id of ["gm2-firebase", "fs-firebase"]) $(id).disabled = !user;
   $("state").textContent = user ? `${user.email} (email_verified: ${user.emailVerified})` : "未ログイン";
   show("token", user ? await user.getIdToken() : "");
-  show("verify-out", ""); $("verdict").textContent = "";
   $("gm2-signup").hidden = true; $("fs-signup").hidden = true;
-  await loadWhitelistIfAdmin(user);
-});
-
-const statusText = { allowed: "通過", not_whitelisted: "名簿に未登録", email_unverified: "メール未確認" };
-$("verify").onclick = guard(async () => {
-  const res = await fetch("/v1/auth/verify", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: await idToken() }),
-  });
-  const body = await res.json();
-  verdict("verdict", res.ok, `HTTP ${res.status} ${statusText[body.status] || body.error || ""}`);
-  show("verify-out", body);
+  await loadAdminViews(user);
 });
 
 // ---- 3. GM2 ----

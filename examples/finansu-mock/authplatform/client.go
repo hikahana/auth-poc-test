@@ -27,12 +27,20 @@ type Result struct {
 }
 
 type Client struct {
-	baseURL string
-	http    *http.Client
+	baseURL      string
+	clientID     string
+	clientSecret string
+	http         *http.Client
 }
 
-func NewClient(baseURL string) *Client {
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 5 * time.Second}}
+// NewClient takes FinanSu's own credentials as registered on the platform.
+func NewClient(baseURL, clientID, clientSecret string) *Client {
+	return &Client{
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		http:         &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 // Verify returns an error only when the platform could not give an answer
@@ -44,6 +52,7 @@ func (c *Client) Verify(ctx context.Context, idToken string) (Result, error) {
 		return Result{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(c.clientID, c.clientSecret)
 
 	res, err := c.http.Do(req)
 	if err != nil {
@@ -59,6 +68,11 @@ func (c *Client) Verify(ctx context.Context, idToken string) (Result, error) {
 		}
 		return r, nil
 	case http.StatusUnauthorized:
+		// The platform challenges with WWW-Authenticate only when FinanSu's own
+		// client credentials are wrong — a misconfiguration, not the user's fault.
+		if res.Header.Get("WWW-Authenticate") != "" {
+			return Result{}, fmt.Errorf("auth platform rejected the client credentials; check AUTH_PLATFORM_CLIENT_ID/SECRET")
+		}
 		return Result{Status: StatusInvalid}, nil
 	default:
 		return Result{}, fmt.Errorf("auth platform returned %d", res.StatusCode)

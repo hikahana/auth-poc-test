@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/hikahana/auth-poc-test/internal/api"
+	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/config"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
 	"github.com/hikahana/auth-poc-test/internal/store"
@@ -37,7 +38,13 @@ func main() {
 		logger.Warn("no administrator yet — register the first one with: go run ./cmd/seed-admin <email>")
 	}
 
-	server := api.NewServer(verifier, wl, cfg.WebDir, logger)
+	server := api.NewServer(api.Deps{
+		Verifier:  verifier,
+		Whitelist: wl,
+		Clients:   clients.New(db),
+		WebDir:    cfg.WebDir,
+		Logger:    logger,
+	})
 
 	logger.Info("starting auth platform API", "addr", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, server.Routes()); err != nil {

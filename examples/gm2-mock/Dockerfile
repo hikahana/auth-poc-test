@@ -8,4 +8,5 @@ RUN bundle install
 COPY . .
 
 EXPOSE 3000
-CMD ["sh", "-c", "bin/rails db:prepare db:seed && bin/rails server -b 0.0.0.0 -p 3000"]
+# tmp/ is bind-mounted, so a pid file left by a previous container would stop Puma from starting.
+CMD ["sh", "-c", "rm -f tmp/pids/server.pid && bin/rails db:prepare db:seed && bin/rails server -b 0.0.0.0 -p 3000"]
