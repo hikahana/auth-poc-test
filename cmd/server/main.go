@@ -9,6 +9,7 @@ import (
 	"github.com/hikahana/auth-poc-test/internal/api"
 	"github.com/hikahana/auth-poc-test/internal/config"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
 
@@ -24,18 +25,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	wl, err := whitelist.Open(cfg.DBPath)
+	db, err := store.Open(cfg.DBPath)
 	if err != nil {
-		logger.Error("failed to open whitelist store", "error", err)
+		logger.Error("failed to open database", "error", err)
 		os.Exit(1)
 	}
-	defer wl.Close()
+	defer db.Close()
 
-	if len(cfg.AdminEmails) == 0 {
-		logger.Warn("AUTH_PLATFORM_ADMIN_EMAILS is not set — nobody can manage the whitelist")
+	wl := whitelist.New(db)
+	if n, err := wl.CountAdmins(ctx); err == nil && n == 0 {
+		logger.Warn("no administrator yet — register the first one with: go run ./cmd/seed-admin <email>")
 	}
 
-	server := api.NewServer(verifier, wl, cfg.AdminEmails, cfg.WebDir, logger)
+	server := api.NewServer(verifier, wl, cfg.WebDir, logger)
 
 	logger.Info("starting auth platform API", "addr", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, server.Routes()); err != nil {

@@ -5,79 +5,92 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/hikahana/auth-poc-test/internal/store"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "whitelist.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "whitelist.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	t.Cleanup(func() { db.Close() })
+	return New(db)
 }
 
-func TestOnlyRegisteredAddressesAreAllowed(t *testing.T) {
+func TestLookupIsCaseInsensitiveAndOnlyFindsRegisteredAddresses(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Add(ctx, "  Member.Nutfes@Gmail.com ", "admin"); err != nil {
+	if _, err := s.Add(ctx, "  Member.Nutfes@Gmail.com ", RoleMember, "admin"); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
-	for email, want := range map[string]bool{
-		"member.nutfes@gmail.com":   true,
-		"MEMBER.NUTFES@GMAIL.COM":   true,
-		"stranger.nutfes@gmail.com": false,
-	} {
-		got, err := s.IsAllowed(ctx, email)
-		if err != nil {
-			t.Fatalf("IsAllowed(%s): %v", email, err)
-		}
-		if got != want {
-			t.Errorf("IsAllowed(%s) = %v, want %v", email, got, want)
-		}
+	e, err := s.Lookup(ctx, "MEMBER.NUTFES@GMAIL.COM")
+	if err != nil || e.Role != RoleMember {
+		t.Fatalf("Lookup = %+v, %v; want member", e, err)
+	}
+	if _, err := s.Lookup(ctx, "stranger.nutfes@gmail.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Lookup(stranger) = %v, want ErrNotFound", err)
 	}
 }
 
-func TestCheckingAnUnknownAddressDoesNotRegisterIt(t *testing.T) {
+func TestAddIsIdempotentAndKeepsTheOriginalRole(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.IsAllowed(ctx, "stranger@example.com"); err != nil {
+	if _, err := s.Add(ctx, "a@example.com", RoleAdmin, "first"); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.List(ctx)
+	e, err := s.Add(ctx, "A@example.com", RoleMember, "second")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("want empty list, got %+v", entries)
+	if e.Role != RoleAdmin || e.AddedBy != "first" {
+		t.Fatalf("re-adding changed the entry: %+v", e)
+	}
+	if _, err := s.Add(ctx, "b@example.com", Role("owner"), "x"); err == nil {
+		t.Fatal("unknown role should be rejected")
 	}
 }
 
-func TestAddIsIdempotentAndRemoveRevokes(t *testing.T) {
+func TestTheLastAdminCannotBeRemovedOrDemoted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	s.Add(ctx, "admin@example.com", RoleAdmin, "seed")
+	s.Add(ctx, "member@example.com", RoleMember, "admin@example.com")
+
+	if err := s.Remove(ctx, "admin@example.com"); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("Remove(last admin) = %v, want ErrLastAdmin", err)
+	}
+	if _, err := s.SetRole(ctx, "admin@example.com", RoleMember); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("SetRole(last admin, member) = %v, want ErrLastAdmin", err)
+	}
+
+	// With a second admin, the first can step down and then be removed.
+	if _, err := s.SetRole(ctx, "member@example.com", RoleAdmin); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if _, err := s.SetRole(ctx, "admin@example.com", RoleMember); err != nil {
+		t.Fatalf("demote with another admin present: %v", err)
+	}
+	if err := s.Remove(ctx, "admin@example.com"); err != nil {
+		t.Fatalf("remove former admin: %v", err)
+	}
+	if n, _ := s.CountAdmins(ctx); n != 1 {
+		t.Fatalf("CountAdmins = %d, want 1", n)
+	}
+}
+
+func TestSetRoleAndRemoveReportUnknownAddresses(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Add(ctx, "a@example.com", "first-admin"); err != nil {
-		t.Fatal(err)
+	if _, err := s.SetRole(ctx, "ghost@example.com", RoleAdmin); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetRole(ghost) = %v, want ErrNotFound", err)
 	}
-	entry, err := s.Add(ctx, "A@example.com", "second-admin")
-	if err != nil {
-		t.Fatalf("second Add: %v", err)
-	}
-	if entry.AddedBy != "first-admin" {
-		t.Errorf("re-adding should keep the original entry, got added_by=%s", entry.AddedBy)
-	}
-
-	if err := s.Remove(ctx, "A@EXAMPLE.COM"); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if ok, _ := s.IsAllowed(ctx, "a@example.com"); ok {
-		t.Fatal("removed address should no longer be allowed")
-	}
-	if err := s.Remove(ctx, "a@example.com"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("removing twice: got %v, want ErrNotFound", err)
+	if err := s.Remove(ctx, "ghost@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Remove(ghost) = %v, want ErrNotFound", err)
 	}
 }

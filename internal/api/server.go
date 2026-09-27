@@ -1,8 +1,8 @@
 // Package api exposes the two things this platform is responsible for:
 // telling a client product "who is this user" (POST /v1/auth/verify), and
-// letting an operator manage the email whitelist (the /v1/admin/* routes).
-// Authorization for what a user is allowed to do stays in each product —
-// this API never returns roles or permissions, only a verified identity.
+// letting administrators manage the platform (the /v1/admin/* routes).
+// Authorization for what a user may do inside a product stays in that
+// product — verify never returns product roles or permissions.
 package api
 
 import (
@@ -22,20 +22,14 @@ type TokenVerifier interface {
 }
 
 type Server struct {
-	verifier    TokenVerifier
-	whitelist   *whitelist.Store
-	adminEmails map[string]bool
-	webDir      string
-	logger      *slog.Logger
+	verifier  TokenVerifier
+	whitelist *whitelist.Store
+	webDir    string
+	logger    *slog.Logger
 }
 
-// NewServer expects adminEmails already lower-cased (config.Load does this).
-func NewServer(verifier TokenVerifier, wl *whitelist.Store, adminEmails []string, webDir string, logger *slog.Logger) *Server {
-	admins := make(map[string]bool, len(adminEmails))
-	for _, e := range adminEmails {
-		admins[e] = true
-	}
-	return &Server{verifier: verifier, whitelist: wl, adminEmails: admins, webDir: webDir, logger: logger}
+func NewServer(verifier TokenVerifier, wl *whitelist.Store, webDir string, logger *slog.Logger) *Server {
+	return &Server{verifier: verifier, whitelist: wl, webDir: webDir, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -45,6 +39,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /v1/admin/whitelist", s.requireAdmin(s.handleListWhitelist))
 	mux.HandleFunc("POST /v1/admin/whitelist", s.requireAdmin(s.handleAddWhitelist))
+	mux.HandleFunc("PATCH /v1/admin/whitelist/{email}", s.requireAdmin(s.handleSetRole))
 	mux.HandleFunc("DELETE /v1/admin/whitelist/{email}", s.requireAdmin(s.handleRemoveWhitelist))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -65,15 +60,15 @@ func (s *Server) Routes() http.Handler {
 
 type adminEmailKey struct{}
 
-// requireAdmin authenticates operators with their own Google login: the
+// requireAdmin authenticates administrators with their own Google login: the
 // request carries a Firebase ID token as a Bearer token, and its verified
-// email must be listed in AUTH_PLATFORM_ADMIN_EMAILS. There is no shared
-// secret that could leak through the browser.
+// email must be on the whitelist with role=admin. There is no shared secret
+// that could leak through the browser.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || idToken == "" {
-			writeError(w, http.StatusUnauthorized, "sign in with Google to manage the whitelist")
+			writeError(w, http.StatusUnauthorized, "sign in with Google to use the admin API")
 			return
 		}
 
@@ -82,15 +77,29 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid id token")
 			return
 		}
-
-		email := strings.ToLower(identity.Email)
-		if !identity.EmailVerified || !s.adminEmails[email] {
+		if !identity.EmailVerified {
 			writeError(w, http.StatusForbidden, "not an administrator")
 			return
 		}
 
-		next(w, r.WithContext(context.WithValue(r.Context(), adminEmailKey{}, email)))
+		entry, err := s.whitelist.Lookup(r.Context(), identity.Email)
+		if err != nil && !errors.Is(err, whitelist.ErrNotFound) {
+			s.logger.Error("admin lookup failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "admin lookup failed")
+			return
+		}
+		if err != nil || entry.Role != whitelist.RoleAdmin {
+			writeError(w, http.StatusForbidden, "not an administrator")
+			return
+		}
+
+		next(w, r.WithContext(context.WithValue(r.Context(), adminEmailKey{}, entry.Email)))
 	}
+}
+
+func adminEmail(r *http.Request) string {
+	email, _ := r.Context().Value(adminEmailKey{}).(string)
+	return email
 }
 
 type verifyRequest struct {
@@ -131,23 +140,22 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 	// The whitelist is keyed by email, and Firebase email/password sign-up does
 	// not prove ownership of the address. Without this check anyone could
-	// register an approved address in Firebase and pass the whitelist.
+	// register a whitelisted address in Firebase and pass.
 	if identity.Email == "" || !identity.EmailVerified {
 		resp.Status = StatusEmailUnverified
 		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 
-	allowed, err := s.whitelist.IsAllowed(r.Context(), identity.Email)
+	_, err = s.whitelist.Lookup(r.Context(), identity.Email)
+	if errors.Is(err, whitelist.ErrNotFound) {
+		resp.Status = StatusNotWhitelisted
+		writeJSON(w, http.StatusForbidden, resp)
+		return
+	}
 	if err != nil {
 		s.logger.Error("whitelist lookup failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "whitelist lookup failed")
-		return
-	}
-
-	if !allowed {
-		resp.Status = StatusNotWhitelisted
-		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 
@@ -166,7 +174,8 @@ func (s *Server) handleListWhitelist(w http.ResponseWriter, r *http.Request) {
 }
 
 type addWhitelistRequest struct {
-	Email string `json:"email"`
+	Email string         `json:"email"`
+	Role  whitelist.Role `json:"role"`
 }
 
 func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
@@ -175,9 +184,15 @@ func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email is required")
 		return
 	}
+	if req.Role == "" {
+		req.Role = whitelist.RoleMember
+	}
+	if !req.Role.Valid() {
+		writeError(w, http.StatusBadRequest, "role must be member or admin")
+		return
+	}
 
-	addedBy, _ := r.Context().Value(adminEmailKey{}).(string)
-	entry, err := s.whitelist.Add(r.Context(), req.Email, addedBy)
+	entry, err := s.whitelist.Add(r.Context(), req.Email, req.Role, adminEmail(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "insert failed")
 		return
@@ -186,18 +201,46 @@ func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, entry)
 }
 
-func (s *Server) handleRemoveWhitelist(w http.ResponseWriter, r *http.Request) {
-	err := s.whitelist.Remove(r.Context(), r.PathValue("email"))
-	if errors.Is(err, whitelist.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "no such whitelist entry")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed")
+type setRoleRequest struct {
+	Role whitelist.Role `json:"role"`
+}
+
+func (s *Server) handleSetRole(w http.ResponseWriter, r *http.Request) {
+	var req setRoleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !req.Role.Valid() {
+		writeError(w, http.StatusBadRequest, "role must be member or admin")
 		return
 	}
 
+	entry, err := s.whitelist.SetRole(r.Context(), r.PathValue("email"), req.Role)
+	if s.writeWhitelistError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
+}
+
+func (s *Server) handleRemoveWhitelist(w http.ResponseWriter, r *http.Request) {
+	err := s.whitelist.Remove(r.Context(), r.PathValue("email"))
+	if s.writeWhitelistError(w, err) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeWhitelistError reports err (if any) and whether it did.
+func (s *Server) writeWhitelistError(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, whitelist.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such whitelist entry")
+	case errors.Is(err, whitelist.ErrLastAdmin):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		s.logger.Error("whitelist update failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "whitelist update failed")
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

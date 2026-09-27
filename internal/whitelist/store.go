@@ -2,8 +2,10 @@
 // the platform. Firebase accepts any Google account, and plain gmail.com
 // accounts carry no `hd` claim, so this list is the only real gate.
 //
-// Entries are registered in advance by operators; there is no self-service
-// application. An address that is not on the list is simply refused.
+// Entries are registered in advance by administrators; there is no
+// self-service application. Each entry also carries the platform's own role:
+// admins may manage the list. That role says nothing about permissions inside
+// the products, which keep their own authorization.
 package whitelist
 
 import (
@@ -13,14 +15,25 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("email is not on the whitelist")
+type Role string
+
+const (
+	RoleMember Role = "member"
+	RoleAdmin  Role = "admin"
+)
+
+func (r Role) Valid() bool { return r == RoleMember || r == RoleAdmin }
+
+var (
+	ErrNotFound  = errors.New("email is not on the whitelist")
+	ErrLastAdmin = errors.New("the last administrator cannot be removed or demoted")
+)
 
 type Entry struct {
 	Email     string    `json:"email"`
+	Role      Role      `json:"role"`
 	AddedBy   string    `json:"added_by"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -29,76 +42,90 @@ type Store struct {
 	db *sql.DB
 }
 
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate schema: %w", err)
-	}
-
-	return &Store{db: db}, nil
-}
-
-func (s *Store) Close() error { return s.db.Close() }
-
-const schema = `
-CREATE TABLE IF NOT EXISTS allowed_emails (
-	email      TEXT PRIMARY KEY,
-	added_by   TEXT NOT NULL,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-`
-
-// normalize makes lookups case-insensitive: Google reports addresses in lower
-// case, but operators may type them with capitals.
-func normalize(email string) string {
+// Normalize makes lookups case-insensitive: Google reports addresses in lower
+// case, but administrators may type them with capitals.
+func Normalize(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-func (s *Store) IsAllowed(ctx context.Context, email string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowed_emails WHERE email = ?`, normalize(email)).Scan(&n)
-	return n > 0, err
-}
+const columns = `email, role, added_by, created_at`
 
-// Add registers an address. Adding one that is already listed is not an error.
-func (s *Store) Add(ctx context.Context, email, addedBy string) (Entry, error) {
-	email = normalize(email)
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO allowed_emails (email, added_by) VALUES (?, ?) ON CONFLICT(email) DO NOTHING`,
-		email, addedBy,
-	); err != nil {
-		return Entry{}, fmt.Errorf("insert: %w", err)
-	}
-
+func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	var e Entry
-	err := s.db.QueryRowContext(ctx,
-		`SELECT email, added_by, created_at FROM allowed_emails WHERE email = ?`, email,
-	).Scan(&e.Email, &e.AddedBy, &e.CreatedAt)
+	err := row.Scan(&e.Email, &e.Role, &e.AddedBy, &e.CreatedAt)
 	return e, err
 }
 
+func (s *Store) Lookup(ctx context.Context, email string) (Entry, error) {
+	e, err := scan(s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM allowed_emails WHERE email = ?`, Normalize(email)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, ErrNotFound
+	}
+	return e, err
+}
+
+// Add registers an address. Adding one that is already listed leaves the
+// existing entry (and its role) unchanged.
+func (s *Store) Add(ctx context.Context, email string, role Role, addedBy string) (Entry, error) {
+	if !role.Valid() {
+		return Entry{}, fmt.Errorf("invalid role %q", role)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO allowed_emails (email, role, added_by) VALUES (?, ?, ?) ON CONFLICT(email) DO NOTHING`,
+		Normalize(email), role, addedBy,
+	); err != nil {
+		return Entry{}, fmt.Errorf("insert: %w", err)
+	}
+	return s.Lookup(ctx, email)
+}
+
+// lastAdminGuard is true when the row is the only remaining admin. Checking it
+// inside the same statement keeps two concurrent requests from removing the
+// last two admins at once.
+const lastAdminGuard = `role = 'admin' AND (SELECT COUNT(*) FROM allowed_emails WHERE role = 'admin') <= 1`
+
+func (s *Store) SetRole(ctx context.Context, email string, role Role) (Entry, error) {
+	if !role.Valid() {
+		return Entry{}, fmt.Errorf("invalid role %q", role)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE allowed_emails SET role = ? WHERE email = ? AND NOT (? = 'member' AND `+lastAdminGuard+`)`,
+		role, Normalize(email), role,
+	)
+	if err != nil {
+		return Entry{}, fmt.Errorf("update role: %w", err)
+	}
+	if err := s.explainNoop(ctx, res, email); err != nil {
+		return Entry{}, err
+	}
+	return s.Lookup(ctx, email)
+}
+
 func (s *Store) Remove(ctx context.Context, email string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM allowed_emails WHERE email = ?`, normalize(email))
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM allowed_emails WHERE email = ? AND NOT (`+lastAdminGuard+`)`, Normalize(email))
 	if err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
+	return s.explainNoop(ctx, res, email)
+}
+
+// explainNoop turns "no row changed" into ErrNotFound or ErrLastAdmin.
+func (s *Store) explainNoop(ctx context.Context, res sql.Result, email string) error {
 	n, err := res.RowsAffected()
-	if err != nil {
+	if err != nil || n > 0 {
 		return err
 	}
-	if n == 0 {
-		return ErrNotFound
+	if _, err := s.Lookup(ctx, email); err != nil {
+		return err
 	}
-	return nil
+	return ErrLastAdmin
 }
 
 func (s *Store) List(ctx context.Context) ([]Entry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT email, added_by, created_at FROM allowed_emails ORDER BY email`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+columns+` FROM allowed_emails ORDER BY role, email`)
 	if err != nil {
 		return nil, err
 	}
@@ -106,11 +133,17 @@ func (s *Store) List(ctx context.Context) ([]Entry, error) {
 
 	entries := []Entry{}
 	for rows.Next() {
-		var e Entry
-		if err := rows.Scan(&e.Email, &e.AddedBy, &e.CreatedAt); err != nil {
+		e, err := scan(rows)
+		if err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowed_emails WHERE role = 'admin'`).Scan(&n)
+	return n, err
 }

@@ -77,7 +77,7 @@
 | `users` | `id`(uuid, PK) / `google_sub`(unique) / `email`(nullable, キャッシュ用) / `display_name` / `created_at` / `updated_at` | ※案Aを採用しFirebaseに全面移行する場合、このテーブルは不要になりFirebaseの`uid`をそのまま使う |
 | `clients` | `id`(uuid, PK) / `client_id`(unique) / `client_secret_hash` / `name`（例: "nutfesBingo"） / `redirect_uris` / `is_active` | 「どのサービスからのリクエストを受け付けるか」の管理台帳 |
 | `user_client_links` | `user_id`(FK) / `client_id`(FK) / `first_seen_at` / `last_seen_at` | ユーザーとプロダクトの多対多の利用ログ |
-| `allowed_emails`（ホワイトリスト） | `email`(PK, 小文字で保存) / `added_by` / `created_at` | ログイン許可の実体。運営が事前登録したメールだけを通す（2026-09-26決定。承認申請の仕組みは持たない） |
+| `allowed_emails`（ホワイトリスト） | `email`(PK, 小文字で保存) / `role`(member/admin) / `added_by` / `created_at` | ログイン許可の実体。運営が事前登録したメールだけを通す（2026-09-26決定。承認申請の仕組みは持たない）。`role=admin` の人が名簿を管理する（2026-09-27決定。最初の1人は `cmd/seed-admin` で登録） |
 
 ### 各プロダクト側（既存usersテーブルへの追加）
 

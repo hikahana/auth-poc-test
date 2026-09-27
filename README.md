@@ -30,11 +30,16 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
    メール/パスワード・Google を有効化する（手動作業。Admin SDK・Client SDKからは自動化不可）
 2. プロジェクト設定 > サービスアカウント からサービスアカウントキー(JSON)を発行し、
    リポジトリ直下に `service-account.json` として配置する（`.gitignore`済み）
-3. `.env.example` を `.env` にコピーし、`AUTH_PLATFORM_ADMIN_EMAILS` に名簿を管理する人のメールアドレスを書く（カンマ区切りで複数可）
-4. 依存を取得して起動する
+3. `.env.example` を `.env` にコピーする
+4. 最初の管理者を登録する（最初の1回だけ。以降の管理者は管理画面から追加する）
 
    ```bash
-   go mod tidy
+   go run ./cmd/seed-admin you@example.com
+   ```
+
+5. 起動する
+
+   ```bash
    go run ./cmd/server
    ```
 
@@ -44,10 +49,14 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 - 名簿にない人がログインしようとしても拒否するだけで、名簿には何も追加しない
 - メールアドレスは大文字・小文字を区別しない
 - 名簿から削除すると、次のログインから拒否される（各プロダクトで発行済みのセッションは、各プロダクト側の有効期限まで残る）
-- 名簿を操作できるのは、`.env` の `AUTH_PLATFORM_ADMIN_EMAILS` に書かれた管理者だけ。管理者は自分のGoogleアカウントで
-  ログインして操作する（Firebase ID Tokenを `Authorization: Bearer` で送り、検証済みメールが管理者一覧にあるかを見る）。
+- 名簿の各メールアドレスは役割を持つ。`member`（メンバー）か `admin`（管理者）
+- 名簿を操作できるのは管理者だけ。管理者は自分のGoogleアカウントでログインして操作する
+  （Firebase ID Tokenを `Authorization: Bearer` で送り、検証済みメールが名簿に `admin` で載っているかを見る）。
   パスワードや共有キーはない。登録者（`added_by`）にはログイン中の管理者のメールが自動で入る
-- 管理者一覧と名簿は別物。管理者自身も各プロダクトを使うなら、自分のメールを名簿に登録しておく
+- 管理者は、メールの登録・削除と、メンバー ⇔ 管理者の切り替えができる
+- 最後の1人の管理者は削除も降格もできない（誰も管理できなくなるのを防ぐ）
+- 最初の管理者は `go run ./cmd/seed-admin <email>` で登録する。メールアドレスをリポジトリに残さないよう、シードファイルではなく引数で渡す
+- この役割は「認証基盤を誰が操作できるか」だけを決める。GM2やFinanSuの中の権限とは無関係
 
 ## エンドポイント
 
@@ -55,10 +64,11 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 |---|---|---|
 | POST | `/v1/auth/verify` | 各プロダクトのサーバーが呼ぶ。Firebase ID Tokenを検証し、名簿に載っているかを返す |
 | GET | `/v1/admin/whitelist` | 名簿の一覧。管理者のみ |
-| POST | `/v1/admin/whitelist` | 名簿に登録（`{"email"}`）。管理者のみ |
+| POST | `/v1/admin/whitelist` | 名簿に登録（`{"email", "role"}`。`role` 省略時は `member`）。管理者のみ |
+| PATCH | `/v1/admin/whitelist/{email}` | 役割の変更（`{"role"}`）。管理者のみ |
 | DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除。管理者のみ |
 
-管理者のみのAPIは、ログインしていなければ401、管理者でなければ403を返す。
+管理者のみのAPIは、ログインしていなければ401、管理者でなければ403を返す。最後の管理者を削除・降格しようとすると409。
 
 `POST /v1/auth/verify` の応答の `status`:
 
@@ -77,7 +87,7 @@ Firebaseアカウントを作るだけで通過できてしまいます。
 `go run ./cmd/server` で起動したあと http://localhost:8080/ を開く（`web/`をこのサーバーが配信する）。
 `web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定を入れる。
 
-1. 「1.」で、`AUTH_PLATFORM_ADMIN_EMAILS` に書いたアカウントでGoogleログインする（「2.」に名簿が表示される）
+1. 「1.」で、`seed-admin` で登録したアカウントでGoogleログインする（「2.」に名簿が表示される）
 2. 「2.」で自分のメールアドレスを名簿に登録し、「1.」の「認証基盤で確認」が `allowed`（200）になることを確認する
 3. 「3. GM2」「4. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
 

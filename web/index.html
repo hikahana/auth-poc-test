@@ -47,14 +47,16 @@
 <section>
   <h2>2. ホワイトリスト（管理者が事前登録する名簿）</h2>
   <p class="note">ここに載っているメールアドレスだけがGoogleログインを通過できます。載っていない人は拒否され、記録も残りません。
-  名簿を操作できるのは、<code>.env</code> の <code>AUTH_PLATFORM_ADMIN_EMAILS</code> に書かれた管理者が「1.」でGoogleログインしているときだけです。</p>
-  <p>管理者: <span id="admin-state">未ログイン</span></p>
+  役割が「管理者」の人が「1.」でGoogleログインしているときだけ、名簿を操作できます（管理者は名簿の管理ができるだけで、GM2やFinanSuの権限とは無関係です）。
+  最初の管理者は <code>go run ./cmd/seed-admin &lt;email&gt;</code> で登録します。最後の1人の管理者は削除・降格できません。</p>
+  <p>ログイン中: <span id="admin-state">未ログイン</span></p>
   <div>
     <input id="add-email" type="email" placeholder="許可するメールアドレス" size="32">
+    <select id="add-role"><option value="member">メンバー</option><option value="admin">管理者</option></select>
     <button id="add">名簿に登録</button>
     <button id="reload">一覧を更新</button>
   </div>
-  <table><thead><tr><th>email</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <table><thead><tr><th>email</th><th>役割</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
   <pre id="admin-out"></pre>
 </section>
 
@@ -150,21 +152,35 @@ async function reload() {
   const rows = await admin("/v1/admin/whitelist");
   $("rows").innerHTML = "";
   for (const e of rows) {
+    const path = `/v1/admin/whitelist/${encodeURIComponent(e.email)}`;
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td></td><td></td><td></td>";
     tr.children[0].textContent = e.email;
-    tr.children[1].textContent = e.added_by;
-    const b = document.createElement("button");
-    b.textContent = "削除";
-    b.onclick = guard(async () => { await admin(`/v1/admin/whitelist/${encodeURIComponent(e.email)}`, "DELETE"); await reload(); });
-    tr.children[2].appendChild(b);
+
+    const role = document.createElement("select");
+    role.innerHTML = '<option value="member">メンバー</option><option value="admin">管理者</option>';
+    role.value = e.role;
+    role.onchange = guard(async () => {
+      try { await admin(path, "PATCH", { role: role.value }); } finally { await reload(); }
+    });
+    tr.children[1].appendChild(role);
+    tr.children[2].textContent = e.added_by;
+
+    const del = document.createElement("button");
+    del.textContent = "削除";
+    del.onclick = guard(async () => {
+      if (!confirm(`${e.email} を名簿から削除しますか？`)) return;
+      await admin(path, "DELETE");
+      await reload();
+    });
+    tr.children[3].appendChild(del);
     $("rows").appendChild(tr);
   }
   show("admin-out", `${rows.length} 件`);
 }
 $("reload").onclick = guard(reload);
 $("add").onclick = guard(async () => {
-  await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value });
+  await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value, role: $("add-role").value });
   $("add-email").value = "";
   await reload();
 });
