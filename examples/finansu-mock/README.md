@@ -68,8 +68,8 @@ go run .
 
 動作確認は http://localhost:8080/ から行います。
 
-1. 「1.」で自分のGoogleアカウントのメールアドレスを名簿に登録する
-2. 「2.」でGoogleログインする
+1. 「1.」でGoogleログインする
+2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
 3. 「4. FinanSu」の「GoogleでFinanSuにログイン」を押す。FinanSuにアカウントがなければ、メール固定の新規登録フォームが出るので、名前と局を入れて登録する
 4. 「current_user」で `authPlatformUserID` が入り、`roleID` が 1（user）になっていることを確認する
 

@@ -30,7 +30,7 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
    メール/パスワード・Google を有効化する（手動作業。Admin SDK・Client SDKからは自動化不可）
 2. プロジェクト設定 > サービスアカウント からサービスアカウントキー(JSON)を発行し、
    リポジトリ直下に `service-account.json` として配置する（`.gitignore`済み）
-3. `.env.example` を `.env` にコピーし、`AUTH_PLATFORM_ADMIN_KEY` を任意のランダム文字列に変更する
+3. `.env.example` を `.env` にコピーし、`AUTH_PLATFORM_ADMIN_EMAILS` に名簿を管理する人のメールアドレスを書く（カンマ区切りで複数可）
 4. 依存を取得して起動する
 
    ```bash
@@ -44,17 +44,21 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 - 名簿にない人がログインしようとしても拒否するだけで、名簿には何も追加しない
 - メールアドレスは大文字・小文字を区別しない
 - 名簿から削除すると、次のログインから拒否される（各プロダクトで発行済みのセッションは、各プロダクト側の有効期限まで残る）
-- 名簿の操作には、`.env` の `AUTH_PLATFORM_ADMIN_KEY`（管理用の共有パスワード。`X-Admin-Key` ヘッダで送る）が必要。
-  PoCの仮の仕組みで、本番では運営メンバー自身のGoogleログインで管理する形に置き換える想定
+- 名簿を操作できるのは、`.env` の `AUTH_PLATFORM_ADMIN_EMAILS` に書かれた管理者だけ。管理者は自分のGoogleアカウントで
+  ログインして操作する（Firebase ID Tokenを `Authorization: Bearer` で送り、検証済みメールが管理者一覧にあるかを見る）。
+  パスワードや共有キーはない。登録者（`added_by`）にはログイン中の管理者のメールが自動で入る
+- 管理者一覧と名簿は別物。管理者自身も各プロダクトを使うなら、自分のメールを名簿に登録しておく
 
 ## エンドポイント
 
 | メソッド | パス | 用途 |
 |---|---|---|
 | POST | `/v1/auth/verify` | 各プロダクトのサーバーが呼ぶ。Firebase ID Tokenを検証し、名簿に載っているかを返す |
-| GET | `/v1/admin/whitelist` | 名簿の一覧。要`X-Admin-Key` |
-| POST | `/v1/admin/whitelist` | 名簿に登録（`{"email", "added_by"}`）。要`X-Admin-Key` |
-| DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除。要`X-Admin-Key` |
+| GET | `/v1/admin/whitelist` | 名簿の一覧。管理者のみ |
+| POST | `/v1/admin/whitelist` | 名簿に登録（`{"email"}`）。管理者のみ |
+| DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除。管理者のみ |
+
+管理者のみのAPIは、ログインしていなければ401、管理者でなければ403を返す。
 
 `POST /v1/auth/verify` の応答の `status`:
 
@@ -73,8 +77,8 @@ Firebaseアカウントを作るだけで通過できてしまいます。
 `go run ./cmd/server` で起動したあと http://localhost:8080/ を開く（`web/`をこのサーバーが配信する）。
 `web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定を入れる。
 
-1. 「1.」で管理キーと登録者名を入れ、自分のGoogleアカウントのメールアドレスを名簿に登録する
-2. 「2.」でGoogleログインし、「認証基盤で確認」が `allowed`（200）になることを確認する
+1. 「1.」で、`AUTH_PLATFORM_ADMIN_EMAILS` に書いたアカウントでGoogleログインする（「2.」に名簿が表示される）
+2. 「2.」で自分のメールアドレスを名簿に登録し、「1.」の「認証基盤で確認」が `allowed`（200）になることを確認する
 3. 「3. GM2」「4. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
 
 ## プロダクトへの組み込み例
@@ -88,7 +92,6 @@ Googleから新規登録したアカウントは、各プロダクトで一番�
 
 ## 未実装（PoCのスコープ外）
 
-- 名簿の管理を、共有パスワードではなく運営メンバーのGoogleログインで行う
 - `/v1/auth/verify` の呼び出し元の認証（`clients`テーブルでのclient_id/secret確認）
 - `clients` / `user_client_links` テーブル（手順書3節の設計はまだコード化していない）
 - SQLite以外のDB（本番想定ならPostgres等への差し替えが必要）

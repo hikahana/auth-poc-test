@@ -31,7 +31,7 @@ func (fakeVerifier) Verify(_ context.Context, idToken string) (firebaseauth.Iden
 	return firebaseauth.Identity{Sub: "uid-" + idToken, Email: idToken, EmailVerified: true}, nil
 }
 
-const adminKey = "test-admin-key"
+const adminEmail = "admin@example.com"
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -41,10 +41,28 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { wl.Close() })
 
-	s := NewServer(fakeVerifier{}, wl, adminKey, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewServer(fakeVerifier{}, wl, []string{adminEmail}, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv := httptest.NewServer(s.Routes())
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// doAs sends the request with a Google login (fake ID token) for `as`, or with
+// no login when `as` is empty.
+func doAs(t *testing.T, srv *httptest.Server, as, method, path, body string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if as != "" {
+		req.Header.Set("Authorization", "Bearer "+as)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	return res.StatusCode, b
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path, body string, admin bool) (int, map[string]any) {
@@ -52,7 +70,7 @@ func do(t *testing.T, srv *httptest.Server, method, path, body string, admin boo
 	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if admin {
-		req.Header.Set("X-Admin-Key", adminKey)
+		req.Header.Set("Authorization", "Bearer "+adminEmail)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -74,8 +92,12 @@ func verify(t *testing.T, srv *httptest.Server, token string) (int, string) {
 func TestVerifyAllowsOnlyPreRegisteredVerifiedEmails(t *testing.T) {
 	srv := newTestServer(t)
 
-	if code, _ := do(t, srv, "POST", "/v1/admin/whitelist", `{"email":"member@example.com","added_by":"admin"}`, true); code != http.StatusCreated {
+	code, body := do(t, srv, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`, true)
+	if code != http.StatusCreated {
 		t.Fatalf("add: got %d", code)
+	}
+	if body["added_by"] != adminEmail {
+		t.Errorf("added_by = %v, want the signed-in admin %s", body["added_by"], adminEmail)
 	}
 
 	tests := []struct {
@@ -101,15 +123,9 @@ func TestVerifyingAStrangerDoesNotAddThemToTheWhitelist(t *testing.T) {
 
 	verify(t, srv, "stranger@example.com")
 
-	req, _ := http.NewRequest("GET", srv.URL+"/v1/admin/whitelist", nil)
-	req.Header.Set("X-Admin-Key", adminKey)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
+	_, raw := doAs(t, srv, adminEmail, "GET", "/v1/admin/whitelist", "")
 	var entries []whitelist.Entry
-	if err := json.NewDecoder(res.Body).Decode(&entries); err != nil {
+	if err := json.Unmarshal(raw, &entries); err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
@@ -119,7 +135,7 @@ func TestVerifyingAStrangerDoesNotAddThemToTheWhitelist(t *testing.T) {
 
 func TestRemovingFromWhitelistRevokesAccess(t *testing.T) {
 	srv := newTestServer(t)
-	do(t, srv, "POST", "/v1/admin/whitelist", `{"email":"member@example.com","added_by":"admin"}`, true)
+	do(t, srv, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`, true)
 
 	if code, _ := do(t, srv, "DELETE", "/v1/admin/whitelist/member@example.com", "", true); code != http.StatusNoContent {
 		t.Fatalf("delete: got %d", code)
@@ -132,16 +148,34 @@ func TestRemovingFromWhitelistRevokesAccess(t *testing.T) {
 	}
 }
 
-func TestAdminRoutesRequireTheAdminKey(t *testing.T) {
+func TestAdminRoutesRequireAnAdministratorsGoogleLogin(t *testing.T) {
 	srv := newTestServer(t)
 
-	for _, r := range []struct{ method, path, body string }{
+	callers := []struct {
+		name string
+		as   string
+		want int
+	}{
+		{"not signed in", "", http.StatusUnauthorized},
+		{"invalid token", "bad", http.StatusUnauthorized},
+		{"signed in but not an admin", "member@example.com", http.StatusForbidden},
+		{"admin email but not verified", "unverified:" + adminEmail, http.StatusForbidden},
+	}
+	routes := []struct{ method, path, body string }{
 		{"GET", "/v1/admin/whitelist", ""},
-		{"POST", "/v1/admin/whitelist", `{"email":"x@example.com","added_by":"me"}`},
+		{"POST", "/v1/admin/whitelist", `{"email":"x@example.com"}`},
 		{"DELETE", "/v1/admin/whitelist/x@example.com", ""},
-	} {
-		if code, _ := do(t, srv, r.method, r.path, r.body, false); code != http.StatusUnauthorized {
-			t.Errorf("%s %s without key: got %d, want 401", r.method, r.path, code)
+	}
+
+	for _, c := range callers {
+		for _, r := range routes {
+			if code, _ := doAs(t, srv, c.as, r.method, r.path, r.body); code != c.want {
+				t.Errorf("%s: %s %s got %d, want %d", c.name, r.method, r.path, code, c.want)
+			}
 		}
+	}
+
+	if code, _ := doAs(t, srv, "ADMIN@Example.com", "GET", "/v1/admin/whitelist", ""); code != http.StatusOK {
+		t.Errorf("admin email should match case-insensitively, got %d", code)
 	}
 }

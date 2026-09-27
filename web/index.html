@@ -21,26 +21,11 @@
 </head>
 <body>
 <h1>auth-poc-test 動作確認</h1>
-<p class="note">流れ: 運営が名簿にメールを登録 → 本人がGoogleでログイン → 各プロダクトへ。
+<p class="note">流れ: 管理者が名簿にメールを登録 → 本人がGoogleでログイン → 各プロダクトへ。
 プロダクトにアカウントがなければ、メール固定の新規登録画面が出ます。</p>
 
 <section>
-  <h2>1. ホワイトリスト（運営が事前登録する名簿）</h2>
-  <p class="note">ここに載っているメールアドレスだけがGoogleログインを通過できます。載っていない人は拒否され、記録も残りません。
-  操作には <code>.env</code> の <code>AUTH_PLATFORM_ADMIN_KEY</code>（管理用の共有パスワード）が必要です。</p>
-  <input id="admin-key" type="password" placeholder="管理キー (AUTH_PLATFORM_ADMIN_KEY)">
-  <input id="added-by" placeholder="登録者名 (例: 自分の名前)">
-  <div>
-    <input id="add-email" type="email" placeholder="許可するメールアドレス" size="32">
-    <button id="add">名簿に登録</button>
-    <button id="reload">一覧を更新</button>
-  </div>
-  <table><thead><tr><th>email</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
-  <pre id="admin-out"></pre>
-</section>
-
-<section>
-  <h2>2. Googleでログイン</h2>
+  <h2>1. Googleでログイン</h2>
   <button id="google">Googleでログイン</button>
   <button id="signout">ログアウト</button>
   <p>状態: <span id="state">未ログイン</span></p>
@@ -57,6 +42,20 @@
     <button id="signup-pw">Firebaseに新規登録</button>
     <button id="send-verify">確認メールを送信</button>
   </details>
+</section>
+
+<section>
+  <h2>2. ホワイトリスト（管理者が事前登録する名簿）</h2>
+  <p class="note">ここに載っているメールアドレスだけがGoogleログインを通過できます。載っていない人は拒否され、記録も残りません。
+  名簿を操作できるのは、<code>.env</code> の <code>AUTH_PLATFORM_ADMIN_EMAILS</code> に書かれた管理者が「1.」でGoogleログインしているときだけです。</p>
+  <p>管理者: <span id="admin-state">未ログイン</span></p>
+  <div>
+    <input id="add-email" type="email" placeholder="許可するメールアドレス" size="32">
+    <button id="add">名簿に登録</button>
+    <button id="reload">一覧を更新</button>
+  </div>
+  <table><thead><tr><th>email</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <pre id="admin-out"></pre>
 </section>
 
 <section>
@@ -133,11 +132,12 @@ const verdict = (id, ok, text) => { $(id).innerHTML = ""; const s = document.cre
 const guard = (fn) => async () => { try { await fn(); } catch (e) { alert(e.message); } };
 const idToken = () => auth.currentUser.getIdToken(true);
 
-// ---- 1. whitelist ----
+// ---- 2. whitelist (admins only, authenticated by their Google login) ----
 const admin = async (path, method = "GET", body) => {
+  if (!auth.currentUser) throw new Error("先に「1.」でGoogleログインしてください");
   const res = await fetch(path, {
     method,
-    headers: { "X-Admin-Key": $("admin-key").value, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await idToken()}`, "Content-Type": "application/json" },
     body: body && JSON.stringify(body),
   });
   if (res.status === 204) return null;
@@ -164,12 +164,24 @@ async function reload() {
 }
 $("reload").onclick = guard(reload);
 $("add").onclick = guard(async () => {
-  await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value, added_by: $("added-by").value });
+  await admin("/v1/admin/whitelist", "POST", { email: $("add-email").value });
   $("add-email").value = "";
   await reload();
 });
 
-// ---- 2. Firebase login ----
+// Loads the list right after sign-in; a non-admin just sees why it is empty.
+async function loadWhitelistIfAdmin(user) {
+  $("rows").innerHTML = ""; show("admin-out", "");
+  if (!user) { $("admin-state").textContent = "未ログイン"; return; }
+  try {
+    await reload();
+    $("admin-state").textContent = `${user.email}（管理者として操作できます）`;
+  } catch (e) {
+    $("admin-state").textContent = `${user.email} は管理者ではありません（名簿は操作できません）`;
+  }
+}
+
+// ---- 1. Firebase login ----
 $("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()));
 $("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
 $("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
@@ -186,6 +198,7 @@ onAuthStateChanged(auth, async (user) => {
   show("token", user ? await user.getIdToken() : "");
   show("verify-out", ""); $("verdict").textContent = "";
   $("gm2-signup").hidden = true; $("fs-signup").hidden = true;
+  await loadWhitelistIfAdmin(user);
 });
 
 const statusText = { allowed: "通過", not_whitelisted: "名簿に未登録", email_unverified: "メール未確認" };

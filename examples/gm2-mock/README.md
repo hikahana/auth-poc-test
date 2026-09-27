@@ -59,8 +59,8 @@ seedで `manager@example.com` / `staff@example.com` / `user@example.com`（パ�
 
 動作確認は http://localhost:8080/ から行います。
 
-1. 「1.」で自分のGoogleアカウントのメールアドレスを名簿に登録する
-2. 「2.」でGoogleログインする
+1. 「1.」でGoogleログインする
+2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
 3. 「3. GM2」の「GoogleでGM2にログイン」を押す。GM2にアカウントがなければ、メール固定の新規登録フォームが出るので、名前を入れて登録する
 4. 「現在のユーザー」で `auth_platform_user_id` が入り、`role_id` が 3（user）になっていることを確認する
 5. 「staff専用API」はuserロールなので403になる。ロールを上げると200になる

@@ -24,13 +24,18 @@ type TokenVerifier interface {
 type Server struct {
 	verifier    TokenVerifier
 	whitelist   *whitelist.Store
-	adminAPIKey string
+	adminEmails map[string]bool
 	webDir      string
 	logger      *slog.Logger
 }
 
-func NewServer(verifier TokenVerifier, wl *whitelist.Store, adminAPIKey, webDir string, logger *slog.Logger) *Server {
-	return &Server{verifier: verifier, whitelist: wl, adminAPIKey: adminAPIKey, webDir: webDir, logger: logger}
+// NewServer expects adminEmails already lower-cased (config.Load does this).
+func NewServer(verifier TokenVerifier, wl *whitelist.Store, adminEmails []string, webDir string, logger *slog.Logger) *Server {
+	admins := make(map[string]bool, len(adminEmails))
+	for _, e := range adminEmails {
+		admins[e] = true
+	}
+	return &Server{verifier: verifier, whitelist: wl, adminEmails: admins, webDir: webDir, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -58,13 +63,33 @@ func (s *Server) Routes() http.Handler {
 	return mux
 }
 
+type adminEmailKey struct{}
+
+// requireAdmin authenticates operators with their own Google login: the
+// request carries a Firebase ID token as a Bearer token, and its verified
+// email must be listed in AUTH_PLATFORM_ADMIN_EMAILS. There is no shared
+// secret that could leak through the browser.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.adminAPIKey == "" || r.Header.Get("X-Admin-Key") != s.adminAPIKey {
-			writeError(w, http.StatusUnauthorized, "invalid or missing admin key")
+		idToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || idToken == "" {
+			writeError(w, http.StatusUnauthorized, "sign in with Google to manage the whitelist")
 			return
 		}
-		next(w, r)
+
+		identity, err := s.verifier.Verify(r.Context(), idToken)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid id token")
+			return
+		}
+
+		email := strings.ToLower(identity.Email)
+		if !identity.EmailVerified || !s.adminEmails[email] {
+			writeError(w, http.StatusForbidden, "not an administrator")
+			return
+		}
+
+		next(w, r.WithContext(context.WithValue(r.Context(), adminEmailKey{}, email)))
 	}
 }
 
@@ -141,18 +166,18 @@ func (s *Server) handleListWhitelist(w http.ResponseWriter, r *http.Request) {
 }
 
 type addWhitelistRequest struct {
-	Email   string `json:"email"`
-	AddedBy string `json:"added_by"`
+	Email string `json:"email"`
 }
 
 func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
 	var req addWhitelistRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !strings.Contains(req.Email, "@") || req.AddedBy == "" {
-		writeError(w, http.StatusBadRequest, "email and added_by are required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !strings.Contains(req.Email, "@") {
+		writeError(w, http.StatusBadRequest, "email is required")
 		return
 	}
 
-	entry, err := s.whitelist.Add(r.Context(), req.Email, req.AddedBy)
+	addedBy, _ := r.Context().Value(adminEmailKey{}).(string)
+	entry, err := s.whitelist.Add(r.Context(), req.Email, addedBy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "insert failed")
 		return

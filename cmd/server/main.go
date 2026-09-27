@@ -31,11 +31,11 @@ func main() {
 	}
 	defer wl.Close()
 
-	if cfg.AdminAPIKey == "" {
-		logger.Warn("AUTH_PLATFORM_ADMIN_KEY is not set — admin endpoints will reject every request")
+	if len(cfg.AdminEmails) == 0 {
+		logger.Warn("AUTH_PLATFORM_ADMIN_EMAILS is not set — nobody can manage the whitelist")
 	}
 
-	server := api.NewServer(verifier, wl, cfg.AdminAPIKey, cfg.WebDir, logger)
+	server := api.NewServer(verifier, wl, cfg.AdminEmails, cfg.WebDir, logger)
 
 	logger.Info("starting auth platform API", "addr", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, server.Routes()); err != nil {
