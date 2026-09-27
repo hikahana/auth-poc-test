@@ -44,7 +44,7 @@ FinanSu の**認証まわりだけ**を再現した Go API です。認証基盤
 | 状況 | 応答 |
 |---|---|
 | ID Tokenが不正 | 401 |
-| 名簿に載っていない / メール未確認（`not_whitelisted` / `email_unverified`） | 403 |
+| `.nutfes` 以外 / 無効化されている / メール未確認（`not_nutfes_email` / `disabled` / `email_unverified`） | 403 |
 | 名簿に載っているがFinanSuにアカウントがない（ログイン時） | 404 `registrationRequired: true` と `email` |
 | アカウントが論理削除済み（`is_deleted`） | 403 |
 | 新規登録時、既にアカウントがある | 409 |
@@ -76,7 +76,7 @@ set -a && . ./.env && set +a && go run .
 動作確認は http://localhost:8080/ から行います。
 
 1. 「1.」でGoogleログインする
-2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
+2. `.nutfes@gmail.com` のアカウントなら、初回ログインで認証基盤の名簿に自動登録される（それ以外のアドレスは拒否される）
 3. 「5. FinanSu」の「GoogleでFinanSuにログイン」を押す。FinanSuにアカウントがなければ、メール固定の新規登録フォームが出るので、名前と局を入れて登録する
 4. 「current_user」で `authPlatformUserID` が入り、`roleID` が 1（user）になっていることを確認する
 

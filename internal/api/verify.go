@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
@@ -21,14 +20,16 @@ type verifyResponse struct {
 
 const (
 	StatusAllowed         = "allowed"
-	StatusNotWhitelisted  = "not_whitelisted"
+	StatusNotNutfesEmail  = "not_nutfes_email"
+	StatusDisabled        = "disabled"
 	StatusEmailUnverified = "email_unverified"
 )
 
 // handleVerify is the endpoint every registered product calls after the
 // Firebase Client SDK hands it an ID token. It verifies the token's
-// signature/expiry with Firebase, then checks the email against the
-// pre-registered whitelist. Only status=allowed should be treated as a
+// signature/expiry with Firebase, lets only NUTFes addresses through,
+// registers a first-time NUTFes address as a member, and refuses anyone an
+// administrator has disabled. Only status=allowed should be treated as a
 // successful login by the caller; each allowed login is recorded against the
 // calling product.
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -48,22 +49,28 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 	// The whitelist is keyed by email, and Firebase email/password sign-up does
 	// not prove ownership of the address. Without this check anyone could
-	// register a whitelisted address in Firebase and pass.
+	// register someone else's NUTFes address in Firebase and pass as them.
 	if identity.Email == "" || !identity.EmailVerified {
 		resp.Status = StatusEmailUnverified
 		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 
-	_, err = s.Whitelist.Lookup(r.Context(), identity.Email)
-	if errors.Is(err, whitelist.ErrNotFound) {
-		resp.Status = StatusNotWhitelisted
+	if !whitelist.Eligible(identity.Email) {
+		resp.Status = StatusNotNutfesEmail
 		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
+
+	entry, err := s.Whitelist.EnsureMember(r.Context(), identity.Email)
 	if err != nil {
-		s.Logger.Error("whitelist lookup failed", "error", err)
+		s.Logger.Error("whitelist registration failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "whitelist lookup failed")
+		return
+	}
+	if !entry.Active {
+		resp.Status = StatusDisabled
+		writeJSON(w, http.StatusForbidden, resp)
 		return
 	}
 

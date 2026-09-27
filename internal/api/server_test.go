@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
@@ -42,7 +43,7 @@ func (f *recordingFirebase) RevokeRefreshTokens(_ context.Context, uid string) e
 	return nil
 }
 
-const seededAdmin = "admin@example.com"
+const seededAdmin = "admin.nutfes@gmail.com"
 
 type testEnv struct {
 	srv *httptest.Server
@@ -135,26 +136,21 @@ func (e *testEnv) verify(t *testing.T, token string) (int, string) {
 	return e.verifyWith(t, e.clientID, e.clientSecret, token)
 }
 
-func TestVerifyAllowsOnlyRegisteredVerifiedEmails(t *testing.T) {
-	e := newTestEnv(t)
+const member = "22.member.nutfes@gmail.com"
 
-	code, body := e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("add: got %d", code)
-	}
-	if body["added_by"] != seededAdmin || body["role"] != "member" {
-		t.Errorf("added entry = %v, want role member added by %s", body, seededAdmin)
-	}
+func TestVerifyAutoRegistersNutfesAddressesAndRejectsEveryoneElse(t *testing.T) {
+	e := newTestEnv(t)
 
 	tests := []struct {
 		token      string
 		wantCode   int
 		wantStatus string
 	}{
-		{"member@example.com", http.StatusOK, StatusAllowed},
+		{member, http.StatusOK, StatusAllowed},
 		{seededAdmin, http.StatusOK, StatusAllowed},
-		{"stranger@example.com", http.StatusForbidden, StatusNotWhitelisted},
-		{"unverified:member@example.com", http.StatusForbidden, StatusEmailUnverified},
+		{"stranger@gmail.com", http.StatusForbidden, StatusNotNutfesEmail},
+		{"s221066@stn.nagaokaut.ac.jp", http.StatusForbidden, StatusNotNutfesEmail},
+		{"unverified:" + member, http.StatusForbidden, StatusEmailUnverified},
 		{"bad", http.StatusUnauthorized, ""},
 	}
 	for _, tt := range tests {
@@ -163,36 +159,43 @@ func TestVerifyAllowsOnlyRegisteredVerifiedEmails(t *testing.T) {
 			t.Errorf("verify(%s) = %d %q, want %d %q", tt.token, code, status, tt.wantCode, tt.wantStatus)
 		}
 	}
-}
 
-func TestVerifyingAStrangerDoesNotAddThemToTheWhitelist(t *testing.T) {
-	e := newTestEnv(t)
-
-	e.verify(t, "stranger@example.com")
-
-	if _, err := e.wl.Lookup(context.Background(), "stranger@example.com"); !errors.Is(err, whitelist.ErrNotFound) {
-		t.Fatalf("stranger was registered: %v", err)
+	entry, err := e.wl.Lookup(context.Background(), member)
+	if err != nil || entry.Role != whitelist.RoleMember || entry.AddedBy != whitelist.AddedByAutoRegistration {
+		t.Fatalf("first login should auto-register a member, got %+v, %v", entry, err)
+	}
+	if _, err := e.wl.Lookup(context.Background(), "stranger@gmail.com"); !errors.Is(err, whitelist.ErrNotFound) {
+		t.Fatalf("a non-NUTFes address was registered: %v", err)
 	}
 }
 
-func TestRemovingFromWhitelistRevokesAccess(t *testing.T) {
+func TestDisabledPeopleStayOutAndCanBeEnabledAgain(t *testing.T) {
 	e := newTestEnv(t)
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
+	e.verify(t, member)
 
-	if code, _ := e.as(t, seededAdmin, "DELETE", "/v1/admin/whitelist/member@example.com", ""); code != http.StatusOK {
-		t.Fatalf("delete: got %d", code)
+	if code, _ := e.as(t, seededAdmin, "POST", "/v1/admin/whitelist/"+member+"/disable", ""); code != http.StatusOK {
+		t.Fatalf("disable: got %d", code)
 	}
-	if code, status := e.verify(t, "member@example.com"); code != http.StatusForbidden || status != StatusNotWhitelisted {
-		t.Fatalf("after delete: got %d %q", code, status)
+	for i := 0; i < 2; i++ { // the second login must not re-register them
+		if code, status := e.verify(t, member); code != http.StatusForbidden || status != StatusDisabled {
+			t.Fatalf("login %d after disable: %d %q", i+1, code, status)
+		}
 	}
-	if code, _ := e.as(t, seededAdmin, "DELETE", "/v1/admin/whitelist/member@example.com", ""); code != http.StatusNotFound {
-		t.Fatalf("second delete: got %d, want 404", code)
+
+	code, body := e.as(t, seededAdmin, "POST", "/v1/admin/whitelist/"+member+"/enable", "")
+	if code != http.StatusOK || body["active"] != true {
+		t.Fatalf("enable: %d %v", code, body)
+	}
+	if code, _ := e.verify(t, member); code != http.StatusOK {
+		t.Fatalf("login after enable: %d", code)
 	}
 }
 
-func TestAdminRoutesRequireTheAdminRole(t *testing.T) {
+func TestAdminRoutesRequireAnActiveAdmin(t *testing.T) {
 	e := newTestEnv(t)
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
+	e.verify(t, member) // auto-registered member
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"23.retired.nutfes@gmail.com","role":"admin"}`)
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist/23.retired.nutfes@gmail.com/disable", "")
 
 	callers := []struct {
 		name string
@@ -201,21 +204,24 @@ func TestAdminRoutesRequireTheAdminRole(t *testing.T) {
 	}{
 		{"not signed in", "", http.StatusUnauthorized},
 		{"invalid token", "bad", http.StatusUnauthorized},
-		{"whitelisted member", "member@example.com", http.StatusForbidden},
-		{"not on the whitelist", "stranger@example.com", http.StatusForbidden},
+		{"member", member, http.StatusForbidden},
+		{"not a NUTFes address", "stranger@gmail.com", http.StatusForbidden},
 		{"admin email but not verified", "unverified:" + seededAdmin, http.StatusForbidden},
+		{"disabled admin", "23.retired.nutfes@gmail.com", http.StatusForbidden},
 	}
 	routes := []struct{ method, path, body string }{
 		{"GET", "/v1/admin/whitelist", ""},
-		{"POST", "/v1/admin/whitelist", `{"email":"x@example.com"}`},
-		{"PATCH", "/v1/admin/whitelist/member@example.com", `{"role":"admin"}`},
-		{"DELETE", "/v1/admin/whitelist/member@example.com", ""},
+		{"POST", "/v1/admin/whitelist", `{"email":"x.nutfes@gmail.com"}`},
+		{"PATCH", "/v1/admin/whitelist/" + member, `{"role":"admin"}`},
+		{"POST", "/v1/admin/whitelist/" + member + "/disable", ""},
+		{"POST", "/v1/admin/whitelist/" + member + "/enable", ""},
+		{"POST", "/v1/admin/whitelist/bulk-disable", `{"entry_year_to":30,"dry_run":true}`},
 		{"GET", "/v1/admin/clients", ""},
 		{"POST", "/v1/admin/clients", `{"name":"X"}`},
 		{"PATCH", "/v1/admin/clients/" + e.clientID, `{"is_active":false}`},
 		{"POST", "/v1/admin/clients/" + e.clientID + "/secret", ""},
 		{"GET", "/v1/admin/logins", ""},
-		{"POST", "/v1/admin/logins/revoke", `{"email":"member@example.com"}`},
+		{"POST", "/v1/admin/logins/revoke", `{"email":"` + member + `"}`},
 	}
 
 	for _, c := range callers {
@@ -226,34 +232,34 @@ func TestAdminRoutesRequireTheAdminRole(t *testing.T) {
 		}
 	}
 
-	if code, _ := e.raw(t, "ADMIN@Example.com", "GET", "/v1/admin/whitelist", ""); code != http.StatusOK {
+	if code, _ := e.raw(t, "ADMIN.NUTFES@Gmail.com", "GET", "/v1/admin/whitelist", ""); code != http.StatusOK {
 		t.Errorf("admin email should match case-insensitively, got %d", code)
 	}
 }
 
 func TestAdminsCanPromoteAndTheNewAdminCanManage(t *testing.T) {
 	e := newTestEnv(t)
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
+	e.verify(t, member)
 
-	code, body := e.as(t, seededAdmin, "PATCH", "/v1/admin/whitelist/member@example.com", `{"role":"admin"}`)
+	code, body := e.as(t, seededAdmin, "PATCH", "/v1/admin/whitelist/"+member, `{"role":"admin"}`)
 	if code != http.StatusOK || body["role"] != "admin" {
 		t.Fatalf("promote: %d %v", code, body)
 	}
-	if code, _ := e.raw(t, "member@example.com", "GET", "/v1/admin/whitelist", ""); code != http.StatusOK {
+	if code, _ := e.raw(t, member, "GET", "/v1/admin/whitelist", ""); code != http.StatusOK {
 		t.Fatalf("promoted admin: got %d", code)
 	}
 
-	code, body = e.as(t, "member@example.com", "POST", "/v1/admin/whitelist", `{"email":"second-admin@example.com","role":"admin"}`)
-	if code != http.StatusCreated || body["role"] != "admin" {
-		t.Fatalf("add as admin: %d %v", code, body)
+	code, body = e.as(t, member, "POST", "/v1/admin/whitelist", `{"email":"24.next.nutfes@gmail.com","role":"admin"}`)
+	if code != http.StatusCreated || body["role"] != "admin" || body["added_by"] != member {
+		t.Fatalf("add as the new admin: %d %v", code, body)
 	}
 }
 
-func TestTheLastAdminIsProtected(t *testing.T) {
+func TestTheLastActiveAdminIsProtected(t *testing.T) {
 	e := newTestEnv(t)
 
-	if code, _ := e.as(t, seededAdmin, "DELETE", "/v1/admin/whitelist/"+seededAdmin, ""); code != http.StatusConflict {
-		t.Errorf("delete last admin: got %d, want 409", code)
+	if code, _ := e.as(t, seededAdmin, "POST", "/v1/admin/whitelist/"+seededAdmin+"/disable", ""); code != http.StatusConflict {
+		t.Errorf("disable last admin: got %d, want 409", code)
 	}
 	if code, _ := e.as(t, seededAdmin, "PATCH", "/v1/admin/whitelist/"+seededAdmin, `{"role":"member"}`); code != http.StatusConflict {
 		t.Errorf("demote last admin: got %d, want 409", code)
@@ -268,12 +274,75 @@ func TestAdminInputValidation(t *testing.T) {
 		want               int
 	}{
 		{"POST", "/v1/admin/whitelist", `{"email":"no-at-sign"}`, http.StatusBadRequest},
-		{"POST", "/v1/admin/whitelist", `{"email":"x@example.com","role":"owner"}`, http.StatusBadRequest},
+		{"POST", "/v1/admin/whitelist", `{"email":"someone@gmail.com"}`, http.StatusBadRequest},
+		{"POST", "/v1/admin/whitelist", `{"email":"x.nutfes@gmail.com","role":"owner"}`, http.StatusBadRequest},
 		{"PATCH", "/v1/admin/whitelist/" + seededAdmin, `{"role":"owner"}`, http.StatusBadRequest},
-		{"PATCH", "/v1/admin/whitelist/ghost@example.com", `{"role":"admin"}`, http.StatusNotFound},
+		{"PATCH", "/v1/admin/whitelist/ghost.nutfes@gmail.com", `{"role":"admin"}`, http.StatusNotFound},
+		{"POST", "/v1/admin/whitelist/ghost.nutfes@gmail.com/disable", "", http.StatusNotFound},
+		{"POST", "/v1/admin/whitelist/ghost.nutfes@gmail.com/enable", "", http.StatusNotFound},
 	} {
 		if code, _ := e.raw(t, seededAdmin, r.method, r.path, r.body); code != r.want {
 			t.Errorf("%s %s %s: got %d, want %d", r.method, r.path, r.body, code, r.want)
+		}
+	}
+}
+
+func TestBulkDisable(t *testing.T) {
+	e := newTestEnv(t)
+	for _, email := range []string{"21.a.nutfes@gmail.com", "22.b.nutfes@gmail.com", "23.c.nutfes@gmail.com", "noyear.nutfes@gmail.com"} {
+		e.verify(t, email)
+	}
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"20.oldadmin.nutfes@gmail.com","role":"admin"}`)
+
+	bulk := func(body string) (int, bulkDisableResponse) {
+		t.Helper()
+		code, raw := e.raw(t, seededAdmin, "POST", "/v1/admin/whitelist/bulk-disable", body)
+		var out bulkDisableResponse
+		json.Unmarshal(raw, &out)
+		return code, out
+	}
+	matchedEmails := func(r bulkDisableResponse) []string {
+		var out []string
+		for _, m := range r.Matched {
+			out = append(out, m.Email)
+		}
+		return out
+	}
+
+	code, preview := bulk(`{"entry_year_to":22,"dry_run":true}`)
+	if code != http.StatusOK || !preview.DryRun || strings.Join(matchedEmails(preview), ",") != "21.a.nutfes@gmail.com,22.b.nutfes@gmail.com" {
+		t.Fatalf("dry run: %d %+v", code, preview)
+	}
+	if code, _ := e.verify(t, "21.a.nutfes@gmail.com"); code != http.StatusOK {
+		t.Fatalf("a dry run must not disable anyone, got %d", code)
+	}
+
+	code, done := bulk(`{"entry_year_to":22}`)
+	if code != http.StatusOK || done.DryRun || len(done.Results) != 2 {
+		t.Fatalf("execute: %d %+v", code, done)
+	}
+	for _, email := range []string{"21.a.nutfes@gmail.com", "22.b.nutfes@gmail.com"} {
+		if code, status := e.verify(t, email); code != http.StatusForbidden || status != StatusDisabled {
+			t.Errorf("%s after bulk disable: %d %q", email, code, status)
+		}
+	}
+	for _, email := range []string{"23.c.nutfes@gmail.com", "noyear.nutfes@gmail.com", "20.oldadmin.nutfes@gmail.com"} {
+		if code, _ := e.verify(t, email); code != http.StatusOK {
+			t.Errorf("%s should be untouched (admins are never bulk-disabled), got %d", email, code)
+		}
+	}
+
+	today := time.Now().In(jst).Format("2006-01-02")
+	if _, byDate := bulk(`{"registered_from":"` + today + `","registered_to":"` + today + `","dry_run":true}`); len(byDate.Matched) != 2 {
+		t.Errorf("registered today = %v, want the 2 remaining active members", matchedEmails(byDate))
+	}
+	if _, byDate := bulk(`{"registered_to":"2000-01-01","dry_run":true}`); len(byDate.Matched) != 0 {
+		t.Errorf("registered before 2000 = %v, want none", matchedEmails(byDate))
+	}
+
+	for _, body := range []string{`{}`, `{"dry_run":true}`, `{"registered_from":"2026/04/01"}`, `not json`} {
+		if code, _ := bulk(body); code != http.StatusBadRequest {
+			t.Errorf("bulk %s: got %d, want 400", body, code)
 		}
 	}
 }

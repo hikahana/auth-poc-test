@@ -35,7 +35,7 @@ func main() {
 	defer db.Close()
 
 	wl := whitelist.New(db)
-	if n, err := wl.CountAdmins(ctx); err == nil && n == 0 {
+	if n, err := wl.CountActiveAdmins(ctx); err == nil && n == 0 {
 		logger.Warn("no administrator yet — register the first one with: go run ./cmd/seed-admin <email>")
 	}
 

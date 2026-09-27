@@ -43,6 +43,11 @@ var migrations = []string{
 	`CREATE INDEX idx_user_client_links_email ON user_client_links (email)`,
 	// 6: where each product receives "drop this user's sessions" notifications.
 	`ALTER TABLE clients ADD COLUMN revoke_url TEXT NOT NULL DEFAULT ''`,
+	// 7, 8: entries are disabled instead of deleted. Eligible addresses are
+	// registered automatically on first login, so a deleted row would simply
+	// come back; a disabled one keeps the person out.
+	`ALTER TABLE allowed_emails ADD COLUMN disabled_at DATETIME`,
+	`ALTER TABLE allowed_emails ADD COLUMN disabled_by TEXT NOT NULL DEFAULT ''`,
 }
 
 func Open(path string) (*sql.DB, error) {

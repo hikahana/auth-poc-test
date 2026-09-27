@@ -12,7 +12,7 @@ import (
 )
 
 // StatusAllowed is the platform's only success status (the others are
-// not_whitelisted and email_unverified); StatusInvalid is set by this client
+// not_nutfes_email, disabled and email_unverified); StatusInvalid is set by this client
 // when the platform rejects the token itself.
 const (
 	StatusAllowed = "allowed"

@@ -17,7 +17,8 @@ func TestVerifyMapsPlatformResponses(t *testing.T) {
 		wantErr    bool
 	}{
 		{"allowed", 200, false, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"allowed"}`, StatusAllowed, false},
-		{"not whitelisted", 403, false, `{"sub":"u1","email":"a@example.com","email_verified":true,"status":"not_whitelisted"}`, "not_whitelisted", false},
+		{"disabled", 403, false, `{"sub":"u1","email":"a.nutfes@gmail.com","email_verified":true,"status":"disabled"}`, "disabled", false},
+		{"not a NUTFes address", 403, false, `{"sub":"u1","email":"a@gmail.com","email_verified":true,"status":"not_nutfes_email"}`, "not_nutfes_email", false},
 		{"unverified", 403, false, `{"sub":"u1","email":"a@example.com","email_verified":false,"status":"email_unverified"}`, "email_unverified", false},
 		{"invalid token", 401, false, `{"error":"invalid id token"}`, StatusInvalid, false},
 		{"FinanSu's own credentials rejected", 401, true, `{"error":"invalid client credentials"}`, "", true},

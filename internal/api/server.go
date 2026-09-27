@@ -50,7 +50,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/whitelist", s.requireAdmin(s.handleListWhitelist))
 	mux.HandleFunc("POST /v1/admin/whitelist", s.requireAdmin(s.handleAddWhitelist))
 	mux.HandleFunc("PATCH /v1/admin/whitelist/{email}", s.requireAdmin(s.handleSetRole))
-	mux.HandleFunc("DELETE /v1/admin/whitelist/{email}", s.requireAdmin(s.handleRemoveWhitelist))
+	mux.HandleFunc("POST /v1/admin/whitelist/{email}/disable", s.requireAdmin(s.handleDisable))
+	mux.HandleFunc("POST /v1/admin/whitelist/{email}/enable", s.requireAdmin(s.handleEnable))
+	mux.HandleFunc("POST /v1/admin/whitelist/bulk-disable", s.requireAdmin(s.handleBulkDisable))
 
 	mux.HandleFunc("GET /v1/admin/clients", s.requireAdmin(s.handleListClients))
 	mux.HandleFunc("POST /v1/admin/clients", s.requireAdmin(s.handleCreateClient))
@@ -114,8 +116,8 @@ type adminEmailKey struct{}
 
 // requireAdmin authenticates administrators with their own Google login: the
 // request carries a Firebase ID token as a Bearer token, and its verified
-// email must be on the whitelist with role=admin. There is no shared secret
-// that could leak through the browser.
+// email must be on the whitelist, active, with role=admin. There is no shared
+// secret that could leak through the browser.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -140,7 +142,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "admin lookup failed")
 			return
 		}
-		if err != nil || entry.Role != whitelist.RoleAdmin {
+		if err != nil || entry.Role != whitelist.RoleAdmin || !entry.Active {
 			writeError(w, http.StatusForbidden, "not an administrator")
 			return
 		}

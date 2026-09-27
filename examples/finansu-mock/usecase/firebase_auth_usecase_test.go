@@ -125,10 +125,10 @@ func TestFirebaseSignInRejections(t *testing.T) {
 			want:  ErrInvalidToken,
 		},
 		{
-			name: "not on the whitelist",
+			name: "refused by the platform (disabled)",
 			setup: func(f *fixture, t *testing.T) {
 				f.existingUser(t, "member@example.com", 1)
-				f.platformSays("not_whitelisted", "firebase-uid-1", "member@example.com", true)
+				f.platformSays("disabled", "firebase-uid-1", "member@example.com", true)
 			},
 			want: ErrNotAllowed,
 		},
@@ -296,9 +296,9 @@ func TestFirebaseSignUpRejections(t *testing.T) {
 			want: ErrInvalidSignUp,
 		},
 		{
-			name: "not on the whitelist",
+			name: "refused by the platform (disabled)",
 			setup: func(f *fixture, t *testing.T) {
-				f.platformSays("not_whitelisted", "firebase-uid-1", "member@example.com", true)
+				f.platformSays("disabled", "firebase-uid-1", "member@example.com", true)
 			},
 			userName: "x", bureauID: 1,
 			want: ErrNotAllowed,

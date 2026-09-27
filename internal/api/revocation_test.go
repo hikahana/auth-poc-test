@@ -75,25 +75,25 @@ func TestRemovingFromWhitelistNotifiesEveryProductThePersonUsed(t *testing.T) {
 	gm2 := newFakeProduct(t, e.clientSecret)
 	e.as(t, seededAdmin, "PATCH", "/v1/admin/clients/"+e.clientID, `{"revoke_url":"`+gm2.srv.URL+`"}`)
 
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
-	if code, _ := e.verify(t, "member@example.com"); code != http.StatusOK {
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"22.member.nutfes@gmail.com"}`)
+	if code, _ := e.verify(t, "22.member.nutfes@gmail.com"); code != http.StatusOK {
 		t.Fatalf("login before removal: %d", code)
 	}
 
-	code, body := e.revocationCall(t, "DELETE", "/v1/admin/whitelist/Member@Example.com", "")
+	code, body := e.revocationCall(t, "POST", "/v1/admin/whitelist/22.Member.NUTFES@gmail.com/disable", "")
 	if code != http.StatusOK {
 		t.Fatalf("delete: got %d", code)
 	}
 	if st := statuses(body.Revocations); st["GM2"] != revocation.StatusRevoked || st["Firebase"] != revocation.StatusRevoked {
 		t.Fatalf("revocations = %+v", body.Revocations)
 	}
-	if got := gm2.received(); len(got) != 1 || got[0] != "uid-member@example.com" {
+	if got := gm2.received(); len(got) != 1 || got[0] != "uid-22.member.nutfes@gmail.com" {
 		t.Fatalf("GM2 was told to revoke %v", got)
 	}
-	if len(e.fb.revoked) != 1 || e.fb.revoked[0] != "uid-member@example.com" {
+	if len(e.fb.revoked) != 1 || e.fb.revoked[0] != "uid-22.member.nutfes@gmail.com" {
 		t.Fatalf("Firebase revoked %v", e.fb.revoked)
 	}
-	if code, status := e.verify(t, "member@example.com"); code != http.StatusForbidden || status != StatusNotWhitelisted {
+	if code, status := e.verify(t, "22.member.nutfes@gmail.com"); code != http.StatusForbidden || status != StatusDisabled {
 		t.Fatalf("login after removal: %d %q", code, status)
 	}
 }
@@ -104,19 +104,19 @@ func TestAFailingProductDoesNotBlockRemovalAndCanBeRetried(t *testing.T) {
 	gm2.status = http.StatusInternalServerError
 	e.as(t, seededAdmin, "PATCH", "/v1/admin/clients/"+e.clientID, `{"revoke_url":"`+gm2.srv.URL+`"}`)
 
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
-	e.verify(t, "member@example.com")
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"22.member.nutfes@gmail.com"}`)
+	e.verify(t, "22.member.nutfes@gmail.com")
 
-	code, body := e.revocationCall(t, "DELETE", "/v1/admin/whitelist/member@example.com", "")
+	code, body := e.revocationCall(t, "POST", "/v1/admin/whitelist/22.member.nutfes@gmail.com/disable", "")
 	if code != http.StatusOK || statuses(body.Revocations)["GM2"] != revocation.StatusFailed {
 		t.Fatalf("delete with failing product: %d %+v", code, body.Revocations)
 	}
-	if code, _ := e.verify(t, "member@example.com"); code != http.StatusForbidden {
+	if code, _ := e.verify(t, "22.member.nutfes@gmail.com"); code != http.StatusForbidden {
 		t.Fatalf("the person must be off the whitelist even though GM2 failed, got %d", code)
 	}
 
 	gm2.status = http.StatusNoContent
-	code, body = e.revocationCall(t, "POST", "/v1/admin/logins/revoke", `{"email":"member@example.com"}`)
+	code, body = e.revocationCall(t, "POST", "/v1/admin/logins/revoke", `{"email":"22.member.nutfes@gmail.com"}`)
 	if code != http.StatusOK || statuses(body.Revocations)["GM2"] != revocation.StatusRevoked {
 		t.Fatalf("retry: %d %+v", code, body.Revocations)
 	}
@@ -142,16 +142,16 @@ func TestForceLogoutKeepsThePersonOnTheWhitelist(t *testing.T) {
 
 func TestRevocationReportsProductsWithoutARevokeURLAsSkipped(t *testing.T) {
 	e := newTestEnv(t)
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
-	e.verify(t, "member@example.com")
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"22.member.nutfes@gmail.com"}`)
+	e.verify(t, "22.member.nutfes@gmail.com")
 
-	_, body := e.revocationCall(t, "DELETE", "/v1/admin/whitelist/member@example.com", "")
+	_, body := e.revocationCall(t, "POST", "/v1/admin/whitelist/22.member.nutfes@gmail.com/disable", "")
 	if statuses(body.Revocations)["GM2"] != revocation.StatusSkipped {
 		t.Fatalf("revocations = %+v, want GM2 skipped", body.Revocations)
 	}
 
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"never-logged-in@example.com"}`)
-	code, body := e.revocationCall(t, "DELETE", "/v1/admin/whitelist/never-logged-in@example.com", "")
+	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"never-logged-in.nutfes@gmail.com"}`)
+	code, body := e.revocationCall(t, "POST", "/v1/admin/whitelist/never-logged-in.nutfes@gmail.com/disable", "")
 	if code != http.StatusOK || len(body.Revocations) != 0 {
 		t.Fatalf("person who never signed in: %d %+v", code, body.Revocations)
 	}

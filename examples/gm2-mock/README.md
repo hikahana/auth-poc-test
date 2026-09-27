@@ -39,7 +39,7 @@ GM2が返すトークンはパスワードログイン（`POST /api/auth/sign_in
 | 状況 | GM2の応答 |
 |---|---|
 | ID Tokenが不正 | 401 |
-| 名簿に載っていない / メール未確認（`not_whitelisted` / `email_unverified`） | 403 |
+| `.nutfes` 以外 / 無効化されている / メール未確認（`not_nutfes_email` / `disabled` / `email_unverified`） | 403 |
 | 名簿に載っているがGM2にアカウントがない（ログイン時） | 404 `registration_required: true` と `email` |
 | 新規登録時、既にアカウントがある | 409 |
 | そのGM2ユーザーが既に別のFirebaseアカウントと紐付いている | 409 |
@@ -67,7 +67,7 @@ seedで `manager@example.com` / `staff@example.com` / `user@example.com`（パ�
 動作確認は http://localhost:8080/ から行います。
 
 1. 「1.」でGoogleログインする
-2. 「2.」で自分のメールアドレスを名簿に登録する（管理者としてログインしている場合）
+2. `.nutfes@gmail.com` のアカウントなら、初回ログインで認証基盤の名簿に自動登録される（それ以外のアドレスは拒否される）
 3. 「4. GM2」の「GoogleでGM2にログイン」を押す。GM2にアカウントがなければ、メール固定の新規登録フォームが出るので、名前を入れて登録する
 4. 「現在のユーザー」で `auth_platform_user_id` が入り、`role_id` が 3（user）になっていることを確認する
 5. 「staff専用API」はuserロールなので403になる。ロールを上げると200になる

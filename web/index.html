@@ -21,7 +21,7 @@
 </head>
 <body>
 <h1>auth-poc-test 動作確認</h1>
-<p class="note">流れ: 管理者が名簿にメールを登録 → 本人がGoogleでログイン → 各プロダクトへ。
+<p class="note">流れ: <code>.nutfes@gmail.com</code> の人がGoogleでログイン（初回は名簿に自動登録）→ 各プロダクトへ。
 プロダクトにアカウントがなければ、メール固定の新規登録画面が出ます。</p>
 
 <section>
@@ -42,19 +42,42 @@
 </section>
 
 <section>
-  <h2>2. ホワイトリスト（管理者が事前登録する名簿）</h2>
-  <p class="note">ここに載っているメールアドレスだけがGoogleログインを通過できます。載っていない人は拒否され、記録も残りません。
-  役割が「管理者」の人が「1.」でGoogleログインしているときだけ、名簿を操作できます（管理者は名簿の管理ができるだけで、GM2やFinanSuの権限とは無関係です）。
-  最初の管理者は <code>go run ./cmd/seed-admin &lt;email&gt;</code> で登録します。最後の1人の管理者は削除・降格できません。</p>
+  <h2>2. 名簿（ホワイトリスト）</h2>
+  <p class="note">ログインできるのは <code>…<strong>.nutfes@gmail.com</strong></code> のアドレスだけです。それ以外は自動で拒否され、名簿にも残りません。
+  <code>.nutfes</code> の人は、初めてGoogleログインした時点で「メンバー」として自動で名簿に登録されます（登録欄に「自動登録」と出ます）。
+  名簿の人を締め出すときは「無効化」します。無効化した人は再ログインしても再登録されず、各プロダクトのセッションも消えます。</p>
+  <p class="note">名簿を操作できるのは役割が「管理者」の人だけです（GM2やFinanSuの権限とは無関係）。最初の管理者は
+  <code>go run ./cmd/seed-admin &lt;email&gt;</code> で登録します。最後の1人の管理者は無効化・降格できません。</p>
   <p>ログイン中: <span id="admin-state">未ログイン</span></p>
   <div>
-    <input id="add-email" type="email" placeholder="許可するメールアドレス" size="32">
+    <input id="add-email" type="email" placeholder="〇〇.nutfes@gmail.com" size="32">
     <select id="add-role"><option value="member">メンバー</option><option value="admin">管理者</option></select>
-    <button id="add">名簿に登録</button>
+    <button id="add">先に登録しておく</button>
     <button id="reload">一覧を更新</button>
+    <span class="note">（メンバーはログインすれば自動登録されるので、主に管理者を追加するときに使います）</span>
   </div>
-  <table><thead><tr><th>email</th><th>役割</th><th>ログインしたプロダクト</th><th>登録者</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <table><thead><tr><th>email</th><th>役割</th><th>状態</th><th>ログインしたプロダクト</th><th>登録</th><th></th></tr></thead><tbody id="rows"></tbody></table>
   <pre id="admin-out"></pre>
+
+  <details>
+    <summary>一括無効化（卒業生の整理など）</summary>
+    <p class="note">条件に合う「有効なメンバー」をまとめて無効化し、各プロダクトのセッションも消します。管理者は対象になりません。
+    条件は組み合わせると「すべて満たす人」になります。まず「対象を確認」で一覧を見てから実行してください。</p>
+    <div>
+      入学年度（メール先頭の2桁）:
+      <input id="bulk-year-from" type="number" min="0" max="99" placeholder="から" style="width:5em"> 〜
+      <input id="bulk-year-to" type="number" min="0" max="99" placeholder="まで" style="width:5em">
+      <span class="note">例: 「まで」に 22 → 22年度以前（<code>22.h.hanada.nutfes</code> など）</span>
+    </div>
+    <div>
+      名簿への登録日:
+      <input id="bulk-reg-from" type="date"> 〜 <input id="bulk-reg-to" type="date">
+      <span class="note">（自動登録の人は、初めてログインした日）</span>
+    </div>
+    <button id="bulk-preview">対象を確認</button>
+    <button id="bulk-run" disabled>この条件で無効化を実行</button>
+    <pre id="bulk-out"></pre>
+  </details>
 </section>
 
 <section>
@@ -172,8 +195,9 @@ async function reload(resetOut = true) {
   for (const e of rows) {
     const path = `/v1/admin/whitelist/${encodeURIComponent(e.email)}`;
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
     tr.children[0].textContent = e.email;
+    if (!e.active) tr.style.color = "#999";
 
     const role = document.createElement("select");
     role.innerHTML = '<option value="member">メンバー</option><option value="admin">管理者</option>';
@@ -182,28 +206,40 @@ async function reload(resetOut = true) {
       try { await admin(path, "PATCH", { role: role.value }); } finally { await reload(); }
     });
     tr.children[1].appendChild(role);
-    tr.children[2].textContent = (loginsByEmail[e.email] || [])
+    tr.children[2].textContent = e.active ? "有効"
+      : `無効（${new Date(e.disabled_at).toLocaleDateString()} ${e.disabled_by}）`;
+    tr.children[3].textContent = (loginsByEmail[e.email] || [])
       .map((l) => `${l.client_name}（最終 ${new Date(l.last_seen_at).toLocaleString()}）`).join("\n") || "-";
-    tr.children[2].style.whiteSpace = "pre-line";
-    tr.children[3].textContent = e.added_by;
+    tr.children[3].style.whiteSpace = "pre-line";
+    tr.children[4].textContent = `${e.added_by === "auto" ? "自動登録" : e.added_by}（${new Date(e.created_at).toLocaleDateString()}）`;
 
-    const logout = document.createElement("button");
-    logout.textContent = "強制ログアウト";
-    logout.onclick = guard(async () => {
-      if (!confirm(`${e.email} の各プロダクトのセッションを消します（名簿には残ります）。よろしいですか？`)) return;
-      showRevocations("強制ログアウト", await admin("/v1/admin/logins/revoke", "POST", { email: e.email }));
-    });
-    const del = document.createElement("button");
-    del.textContent = "削除";
-    del.onclick = guard(async () => {
-      if (!confirm(`${e.email} を名簿から削除し、各プロダクトのセッションも消します。よろしいですか？`)) return;
-      showRevocations("名簿から削除", await admin(path, "DELETE"));
-      await reload(false);
-    });
-    tr.children[4].append(logout, del);
+    if (e.active) {
+      const logout = document.createElement("button");
+      logout.textContent = "強制ログアウト";
+      logout.onclick = guard(async () => {
+        if (!confirm(`${e.email} の各プロダクトのセッションを消します（名簿では有効のまま）。よろしいですか？`)) return;
+        showRevocations("強制ログアウト", await admin("/v1/admin/logins/revoke", "POST", { email: e.email }));
+      });
+      const disable = document.createElement("button");
+      disable.textContent = "無効化";
+      disable.onclick = guard(async () => {
+        if (!confirm(`${e.email} を無効化し、各プロダクトのセッションも消します。よろしいですか？`)) return;
+        showRevocations("無効化", await admin(`${path}/disable`, "POST"));
+        await reload(false);
+      });
+      tr.children[5].append(logout, disable);
+    } else {
+      const enable = document.createElement("button");
+      enable.textContent = "再有効化";
+      enable.onclick = guard(async () => {
+        await admin(`${path}/enable`, "POST");
+        await reload();
+      });
+      tr.children[5].append(enable);
+    }
     $("rows").appendChild(tr);
   }
-  if (resetOut) show("admin-out", `${rows.length} 件`);
+  if (resetOut) show("admin-out", `${rows.length} 件（有効 ${rows.filter((r) => r.active).length} 件）`);
 }
 
 const revocationText = { revoked: "無効化した", failed: "失敗", skipped: "通知先URL未設定のため未通知" };
@@ -214,9 +250,42 @@ function showRevocations(action, res) {
   show("admin-out", [
     `${action}: ${res.email}`,
     ...(lines.length ? lines : ["・どのプロダクトにもログインした記録がないため、無効化するセッションはありません"]),
-    ...(failed ? ["失敗したものは「強制ログアウト」で再送できます（名簿から削除済みの場合は、プロダクト側で個別に対応してください）"] : []),
+    ...(failed ? ["失敗したものは「強制ログアウト」で再送できます"] : []),
   ].join("\n"));
 }
+
+// ---- 2b. bulk disable ----
+function bulkCriteria() {
+  const num = (id) => ($(id).value === "" ? undefined : Number($(id).value));
+  return {
+    entry_year_from: num("bulk-year-from"), entry_year_to: num("bulk-year-to"),
+    registered_from: $("bulk-reg-from").value || undefined, registered_to: $("bulk-reg-to").value || undefined,
+  };
+}
+let previewedCriteria = null;
+for (const id of ["bulk-year-from", "bulk-year-to", "bulk-reg-from", "bulk-reg-to"]) {
+  $(id).oninput = () => { previewedCriteria = null; $("bulk-run").disabled = true; };
+}
+$("bulk-preview").onclick = guard(async () => {
+  const criteria = bulkCriteria();
+  const res = await admin("/v1/admin/whitelist/bulk-disable", "POST", { ...criteria, dry_run: true });
+  previewedCriteria = res.matched.length ? criteria : null;
+  $("bulk-run").disabled = !previewedCriteria;
+  show("bulk-out", [`対象: ${res.matched.length} 人`, ...res.matched.map((e) => `・${e.email}`)].join("\n"));
+});
+$("bulk-run").onclick = guard(async () => {
+  if (!previewedCriteria) return;
+  if (!confirm("確認した条件の人をまとめて無効化し、各プロダクトのセッションも消します。よろしいですか？")) return;
+  const res = await admin("/v1/admin/whitelist/bulk-disable", "POST", { ...previewedCriteria, dry_run: false });
+  const failed = (res.results || []).filter((r) => r.revocations.some((x) => x.status === "failed"));
+  show("bulk-out", [
+    `${res.matched.length} 人を無効化しました`,
+    ...(failed.length ? ["一部のプロダクトへの通知に失敗しました（各行の「強制ログアウト」で再送できます）:",
+                         ...failed.map((r) => `・${r.email}`)] : []),
+  ].join("\n"));
+  previewedCriteria = null; $("bulk-run").disabled = true;
+  await reload(false);
+});
 
 // ---- 3. products (clients) ----
 function showSecret(c) {

@@ -78,7 +78,7 @@ class FirebaseSignInTest < ActionDispatch::IntegrationTest
     firebase_sign_up(verified)
     assert_response :conflict
 
-    firebase_sign_up(verified(status: 'not_whitelisted', sub: 'uid-2', email: 'someone@example.com'))
+    firebase_sign_up(verified(status: 'disabled', sub: 'uid-2', email: 'someone@example.com'))
     assert_response :forbidden
     assert_not User.exists?(email: 'someone@example.com')
 
@@ -86,10 +86,10 @@ class FirebaseSignInTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
-  test 'rejects a login that is not on the whitelist' do
+  test 'rejects a login the platform refuses (e.g. disabled)' do
     create_user(email: 'member@example.com')
 
-    firebase_sign_in(verified(status: 'not_whitelisted'))
+    firebase_sign_in(verified(status: 'disabled'))
 
     assert_response :forbidden
     assert_empty auth_headers_from(response)

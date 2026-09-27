@@ -34,19 +34,18 @@ func TestVerifyOnlyAcceptsRegisteredActiveProducts(t *testing.T) {
 
 func TestVerifyRecordsWhereEachAllowedLoginSignedIn(t *testing.T) {
 	e := newTestEnv(t)
-	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
 
 	_, created := e.as(t, seededAdmin, "POST", "/v1/admin/clients", `{"name":"FinanSu"}`)
 	finansuID, finansuSecret := created["id"].(string), created["client_secret"].(string)
 
-	e.verify(t, "member@example.com")
-	e.verify(t, "member@example.com")
-	e.verifyWith(t, finansuID, finansuSecret, "member@example.com")
-	e.verify(t, "stranger@example.com")                           // rejected: not recorded
-	e.verify(t, "unverified:member@example.com")                  // rejected: not recorded
-	e.verifyWith(t, e.clientID, "cs_wrong", "member@example.com") // bad client: not recorded
+	e.verify(t, "22.member.nutfes@gmail.com")
+	e.verify(t, "22.member.nutfes@gmail.com")
+	e.verifyWith(t, finansuID, finansuSecret, "22.member.nutfes@gmail.com")
+	e.verify(t, "stranger@gmail.com")                                     // rejected: not recorded
+	e.verify(t, "unverified:22.member.nutfes@gmail.com")                  // rejected: not recorded
+	e.verifyWith(t, e.clientID, "cs_wrong", "22.member.nutfes@gmail.com") // bad client: not recorded
 
-	_, raw := e.raw(t, seededAdmin, "GET", "/v1/admin/logins?email=member@example.com", "")
+	_, raw := e.raw(t, seededAdmin, "GET", "/v1/admin/logins?email=22.member.nutfes@gmail.com", "")
 	var logins []map[string]any
 	if err := json.Unmarshal(raw, &logins); err != nil {
 		t.Fatal(err)
@@ -54,7 +53,7 @@ func TestVerifyRecordsWhereEachAllowedLoginSignedIn(t *testing.T) {
 	if len(logins) != 2 || logins[0]["client_name"] != "FinanSu" || logins[1]["client_name"] != "GM2" {
 		t.Fatalf("logins = %v, want one row each for FinanSu and GM2", logins)
 	}
-	if logins[1]["sub"] != "uid-member@example.com" {
+	if logins[1]["sub"] != "uid-22.member.nutfes@gmail.com" {
 		t.Errorf("sub = %v", logins[1]["sub"])
 	}
 
