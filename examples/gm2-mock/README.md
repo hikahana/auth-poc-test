@@ -54,7 +54,7 @@ GM2を認証基盤にプロダクトとして登録し、発行されたIDと秘
 （`.env.example` 参照。管理画面の「3. プロダクト」で登録した値を書いてもよい）。
 
 ```bash
-(cd ../.. && go run ./cmd/register-client GM2) > .env
+(cd ../.. && go run ./cmd/register-client GM2 http://localhost:3100/api/auth/platform_revocations) > .env
 ```
 
 ```bash
@@ -94,9 +94,14 @@ GM2に持っていくのは以下だけです。既存ファイルの変更は`r
 | `db/migrate/*_add_auth_platform_user_id_to_users.rb` | `users.auth_platform_user_id`（nullable, unique）を追加 |
 | `app/services/auth_platform_client.rb` | 認証基盤の`/v1/auth/verify`を呼ぶクライアント |
 | `app/controllers/api/auth/firebase_sessions_controller.rb` | Googleログインと新規登録のエンドポイント |
-| `config/routes.rb` | `namespace :api { namespace :auth { post 'firebase_sign_in'; post 'firebase_sign_up' } }` を追加 |
+| `app/controllers/api/auth/platform_revocations_controller.rb` | 名簿から削除された人のトークンを消す受け口（認証基盤からの署名付き通知） |
+| `config/routes.rb` | `namespace :api { namespace :auth { post 'firebase_sign_in'; post 'firebase_sign_up'; post 'platform_revocations' } }` を追加 |
 | 環境変数 | `AUTH_PLATFORM_URL`、`AUTH_PLATFORM_CLIENT_ID`、`AUTH_PLATFORM_CLIENT_SECRET`（認証基盤でGM2を登録して発行） |
-| `test/integration/firebase_sign_in_test.rb` | そのまま移植可能 |
+| `test/integration/firebase_sign_in_test.rb`、`platform_revocations_test.rb` | そのまま移植可能 |
+
+`platform_revocations` は、署名（`AUTH_PLATFORM_CLIENT_SECRET` から作る鍵によるHMAC）を検証したうえで、
+`auth_platform_user_id` が一致するユーザーの devise_token_auth のトークンをすべて消します（パスワードログインで発行されたものも含む）。
+通知の仕様はリポジトリ直下のREADMEの「通知の仕様」を参照してください。
 
 `api/auth/`配下はGM2の`ApiAccessControlRegistry`で未認証の対象外（excluded）になっているので、
 `config/api_access_control.yml`への追記は不要です。

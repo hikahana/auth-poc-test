@@ -62,15 +62,18 @@
   <p class="note">ここに登録されたプロダクトだけが、ログイン確認（<code>/v1/auth/verify</code>）を呼べます。
   登録すると発行されるIDと秘密鍵を、そのプロダクトのサーバーの環境変数
   （<code>AUTH_PLATFORM_CLIENT_ID</code> / <code>AUTH_PLATFORM_CLIENT_SECRET</code>）に設定します。管理者のみ操作できます。</p>
+  <p class="note">通知先URLには、名簿から削除した人（または強制ログアウトした人）のセッションを消すよう、認証基盤が署名付きで通知します。
+  未設定のプロダクトには通知されず、結果に「skipped」と出ます。</p>
   <div>
     <input id="client-name" placeholder="プロダクト名 (例: GM2)">
+    <input id="client-revoke-url" placeholder="通知先URL (例: http://localhost:3100/api/auth/platform_revocations)" size="44">
     <button id="client-add">登録</button>
   </div>
   <div id="client-secret-box" class="signup" hidden>
     <strong>発行された認証情報（この画面を閉じると秘密鍵は二度と表示できません）</strong>
     <pre id="client-secret"></pre>
   </div>
-  <table><thead><tr><th>名前</th><th>ID</th><th>状態</th><th></th></tr></thead><tbody id="client-rows"></tbody></table>
+  <table><thead><tr><th>名前</th><th>ID</th><th>通知先URL</th><th>状態</th><th></th></tr></thead><tbody id="client-rows"></tbody></table>
 </section>
 
 <section>
@@ -161,7 +164,7 @@ const admin = async (path, method = "GET", body) => {
   return json;
 };
 
-async function reload() {
+async function reload(resetOut = true) {
   const [rows, logins] = await Promise.all([admin("/v1/admin/whitelist"), admin("/v1/admin/logins")]);
   const loginsByEmail = {};
   for (const l of logins) (loginsByEmail[l.email] ??= []).push(l);
@@ -184,17 +187,35 @@ async function reload() {
     tr.children[2].style.whiteSpace = "pre-line";
     tr.children[3].textContent = e.added_by;
 
+    const logout = document.createElement("button");
+    logout.textContent = "強制ログアウト";
+    logout.onclick = guard(async () => {
+      if (!confirm(`${e.email} の各プロダクトのセッションを消します（名簿には残ります）。よろしいですか？`)) return;
+      showRevocations("強制ログアウト", await admin("/v1/admin/logins/revoke", "POST", { email: e.email }));
+    });
     const del = document.createElement("button");
     del.textContent = "削除";
     del.onclick = guard(async () => {
-      if (!confirm(`${e.email} を名簿から削除しますか？`)) return;
-      await admin(path, "DELETE");
-      await reload();
+      if (!confirm(`${e.email} を名簿から削除し、各プロダクトのセッションも消します。よろしいですか？`)) return;
+      showRevocations("名簿から削除", await admin(path, "DELETE"));
+      await reload(false);
     });
-    tr.children[4].appendChild(del);
+    tr.children[4].append(logout, del);
     $("rows").appendChild(tr);
   }
-  show("admin-out", `${rows.length} 件`);
+  if (resetOut) show("admin-out", `${rows.length} 件`);
+}
+
+const revocationText = { revoked: "無効化した", failed: "失敗", skipped: "通知先URL未設定のため未通知" };
+function showRevocations(action, res) {
+  const lines = res.revocations.map((r) =>
+    `・${r.target}: ${revocationText[r.status] || r.status}${r.detail ? `（${r.detail}）` : ""}`);
+  const failed = res.revocations.some((r) => r.status === "failed");
+  show("admin-out", [
+    `${action}: ${res.email}`,
+    ...(lines.length ? lines : ["・どのプロダクトにもログインした記録がないため、無効化するセッションはありません"]),
+    ...(failed ? ["失敗したものは「強制ログアウト」で再送できます（名簿から削除済みの場合は、プロダクト側で個別に対応してください）"] : []),
+  ].join("\n"));
 }
 
 // ---- 3. products (clients) ----
@@ -209,10 +230,20 @@ async function reloadClients() {
   for (const c of list) {
     const path = `/v1/admin/clients/${encodeURIComponent(c.id)}`;
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td><code></code></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td><code></code></td><td></td><td></td><td></td>";
     tr.children[0].textContent = c.name;
     tr.children[1].firstChild.textContent = c.id;
-    tr.children[2].textContent = c.is_active ? "有効" : "停止中";
+    tr.children[2].textContent = c.revoke_url || "（未設定）";
+    const editURL = document.createElement("button");
+    editURL.textContent = "変更";
+    editURL.onclick = guard(async () => {
+      const url = prompt(`${c.name} の通知先URL（空にすると通知しません）`, c.revoke_url);
+      if (url === null) return;
+      await admin(path, "PATCH", { revoke_url: url });
+      await reloadClients();
+    });
+    tr.children[2].append(" ", editURL);
+    tr.children[3].textContent = c.is_active ? "有効" : "停止中";
 
     const toggle = document.createElement("button");
     toggle.textContent = c.is_active ? "停止" : "再開";
@@ -227,13 +258,13 @@ async function reloadClients() {
       if (!confirm(`${c.name} の秘密鍵を再発行すると、今の秘密鍵はすぐ使えなくなります。再発行しますか？`)) return;
       showSecret(await admin(`${path}/secret`, "POST"));
     });
-    tr.children[3].append(toggle, rotate);
+    tr.children[4].append(toggle, rotate);
     $("client-rows").appendChild(tr);
   }
 }
 $("client-add").onclick = guard(async () => {
-  showSecret(await admin("/v1/admin/clients", "POST", { name: $("client-name").value }));
-  $("client-name").value = "";
+  showSecret(await admin("/v1/admin/clients", "POST", { name: $("client-name").value, revoke_url: $("client-revoke-url").value }));
+  $("client-name").value = ""; $("client-revoke-url").value = "";
   await reloadClients();
 });
 $("reload").onclick = guard(reload);

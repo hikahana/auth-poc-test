@@ -46,9 +46,11 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 6. 認証基盤を呼ぶプロダクトを登録し、出力されたIDと秘密鍵を各プロダクトの環境変数に設定する
    （管理画面の「3. プロダクト」からも登録できる。秘密鍵は発行時に一度だけ表示される）
 
+   2つ目の引数は、名簿から削除した人のセッションを消すよう通知する先（プロダクトの受け口）。後から管理画面でも変更できる。
+
    ```bash
-   go run ./cmd/register-client GM2 > examples/gm2-mock/.env
-   go run ./cmd/register-client FinanSu > examples/finansu-mock/.env
+   go run ./cmd/register-client GM2 http://localhost:3100/api/auth/platform_revocations > examples/gm2-mock/.env
+   go run ./cmd/register-client FinanSu http://localhost:3200/auth_platform/revocations > examples/finansu-mock/.env
    ```
 
 ## プロダクト（クライアント）とログイン記録
@@ -60,12 +62,46 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
   記録できなかった場合はログインを通さない（後で無効化できないログインを作らないため）
 - 認証基盤はセッションを持たない。この記録は、名簿から消した人のセッションを各プロダクトに消させるために使う
 
+## 名簿から削除したときの即時無効化
+
+名簿から削除すると、認証基盤は次の順に処理し、結果をプロダクトごとに返す（管理画面にも表示される）。
+
+1. 名簿から削除する（以降の新しいログインはすべて拒否される）
+2. ログイン記録から、その人がログインしたことのあるプロダクトを調べる
+3. Firebaseでその人のリフレッシュトークンを無効化する（ブラウザが新しいID Tokenを取れなくなる）
+4. 各プロダクトの通知先URLへ「この人のセッションを消して」と署名付きで通知する
+
+- 1つのプロダクトへの通知が失敗しても、ほかのプロダクトへの通知と名簿からの削除は行われる。失敗は結果に `failed` と出るので、
+  「強制ログアウト」（`POST /v1/admin/logins/revoke`）で再送する。自動の再送はない
+- 通知先URLが未設定のプロダクトは `skipped` になる（そのプロダクトのセッションは有効期限まで残る）
+- 「強制ログアウト」は、名簿に残したままセッションだけを消すのにも使える
+- 注意: 各プロダクトが通知で消すのはセッションだけ。削除した人がそのプロダクトのパスワードも持っている場合は、パスワードで
+  再びログインできてしまう。完全に締め出すには、プロダクト側でアカウントを停止する
+
+### 通知の仕様（各プロダクトが実装する受け口）
+
+```
+POST <通知先URL>
+Content-Type: application/json
+X-Auth-Platform-Signature: t=<UNIX秒>,v1=<HMAC-SHA256の16進>
+
+{"event":"user.revoked","sub":"<FirebaseのユーザーID>","email":"<メールアドレス>"}
+```
+
+- 署名の鍵は `SHA-256(AUTH_PLATFORM_CLIENT_SECRET)` の16進文字列（小文字）。署名する文字列は `"<t>.<生のリクエストボディ>"`。
+  プロダクトは自分の秘密鍵から同じ鍵を作れるので、追加の設定は要らない（認証基盤は秘密鍵そのものを保存していない）
+- `t` が自分の時計から5分以上ずれている通知は拒否する（盗聴した通知の再送を防ぐため）
+- 署名が正しければ、`users.auth_platform_user_id = sub` のユーザーのセッションをすべて消し、2xxを返す。
+  該当ユーザーがいなくても2xxを返す（再送しても安全なように）
+- 実装例: [GM2モック](examples/gm2-mock/app/controllers/api/auth/platform_revocations_controller.rb)、
+  [FinanSuモック](examples/finansu-mock/authplatform/revocation.go)、署名の参照実装は [internal/revocation](internal/revocation/revocation.go)
+
 ## ホワイトリスト（名簿）
 
 - 運営が、ログインを許可するメールアドレスを事前に登録する。載っているかどうかだけを見る
 - 名簿にない人がログインしようとしても拒否するだけで、名簿には何も追加しない
 - メールアドレスは大文字・小文字を区別しない
-- 名簿から削除すると、次のログインから拒否される（各プロダクトで発行済みのセッションは、各プロダクト側の有効期限まで残る）
+- 名簿から削除すると、次のログインから拒否され、各プロダクトで発行済みのセッションも消される（下の「即時無効化」参照）
 - 名簿の各メールアドレスは役割を持つ。`member`（メンバー）か `admin`（管理者）
 - 名簿を操作できるのは管理者だけ。管理者は自分のGoogleアカウントでログインして操作する
   （Firebase ID Tokenを `Authorization: Bearer` で送り、検証済みメールが名簿に `admin` で載っているかを見る）。
@@ -83,12 +119,13 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 | GET | `/v1/admin/whitelist` | 名簿の一覧。管理者のみ |
 | POST | `/v1/admin/whitelist` | 名簿に登録（`{"email", "role"}`。`role` 省略時は `member`）。管理者のみ |
 | PATCH | `/v1/admin/whitelist/{email}` | 役割の変更（`{"role"}`）。管理者のみ |
-| DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除。管理者のみ |
+| DELETE | `/v1/admin/whitelist/{email}` | 名簿から削除し、各プロダクトのセッションを無効化する。結果（`revocations`）を返す。管理者のみ |
 | GET | `/v1/admin/clients` | プロダクトの一覧（秘密鍵は含まない）。管理者のみ |
-| POST | `/v1/admin/clients` | プロダクトの登録（`{"name"}`）。応答にだけ `client_secret` が入る。管理者のみ |
-| PATCH | `/v1/admin/clients/{id}` | 停止・再開（`{"is_active"}`）。管理者のみ |
+| POST | `/v1/admin/clients` | プロダクトの登録（`{"name", "revoke_url"}`）。応答にだけ `client_secret` が入る。管理者のみ |
+| PATCH | `/v1/admin/clients/{id}` | 停止・再開、通知先URLの変更（`{"is_active"}` / `{"revoke_url"}`）。管理者のみ |
 | POST | `/v1/admin/clients/{id}/secret` | 秘密鍵の再発行。管理者のみ |
 | GET | `/v1/admin/logins` | ログイン記録（`?email=` で絞り込み可）。管理者のみ |
+| POST | `/v1/admin/logins/revoke` | 強制ログアウト（`{"email"}`）。名簿は変えずにセッションだけ無効化し、結果を返す。管理者のみ |
 
 管理者のみのAPIは、ログインしていなければ401、管理者でなければ403を返す。最後の管理者を削除・降格しようとすると409。
 `verify` はプロダクトの認証情報が無い・間違っている・停止中のとき、`WWW-Authenticate` ヘッダ付きの401を返す
@@ -115,6 +152,8 @@ Firebaseアカウントを作るだけで通過できてしまいます。
 2. 必要なら「2.」でほかのメンバーを名簿に登録する（管理者は最初から名簿に載っている）
 3. 「4. GM2」「5. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
 4. 「2.」の「ログインしたプロダクト」に、ログインしたプロダクトが記録されていることを確認する
+5. 「2.」でその人を削除（または強制ログアウト）すると、結果欄にプロダクトごとの無効化結果が出て、
+   「4.」「5.」の「現在のユーザー」「current_user」が401になる
 
 ## プロダクトへの組み込み例
 

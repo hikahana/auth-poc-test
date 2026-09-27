@@ -63,7 +63,7 @@ FinanSuを認証基盤にプロダクトとして登録し、発行されたID�
 （`.env.example` 参照。管理画面の「3. プロダクト」で登録した値を書いてもよい）。
 
 ```bash
-(cd ../.. && go run ./cmd/register-client FinanSu) > .env
+(cd ../.. && go run ./cmd/register-client FinanSu http://localhost:3200/auth_platform/revocations) > .env
 ```
 
 ```bash
@@ -97,7 +97,8 @@ go test ./...
 | `openapi/openapi.yaml` | `POST /mail_auth/firebase_signin`（`id_token`）と `POST /mail_auth/firebase_signup`（`id_token`, `name`, `bureau_id`）をJSONボディで追加し、`make gen` |
 | `api/externals/repository/` | `user_repository` に `FindByAuthPlatformUserID`・`LinkAuthPlatformUserID`・`RegisterFirebaseUser`（トランザクション）、`mail_auth_repository` に `FindMailAuthByUserID` を追加 |
 | `api/internals/usecase/` | `firebase_auth_usecase.go` と `authplatform` クライアントを追加し、wireのプロバイダに登録 |
-| `api/externals/handler/` | `PostMailAuthFirebaseSignin` と `PostMailAuthFirebaseSignup` を追加 |
+| `api/externals/handler/` | `PostMailAuthFirebaseSignin`、`PostMailAuthFirebaseSignup`、`PostAuthPlatformRevocation`（名簿から削除された人のセッションを消す受け口）を追加 |
+| `authplatform/revocation.go` 相当 | 認証基盤からの通知の署名検証（`VerifySignature`）。`usecase` に `RevokeSessions`（`DestroyByUserID` を呼ぶだけ）を追加 |
 | 環境変数 | `AUTH_PLATFORM_URL`、`AUTH_PLATFORM_CLIENT_ID`、`AUTH_PLATFORM_CLIENT_SECRET`（認証基盤でFinanSuを登録して発行） |
 | フロント（`view/next-project`） | 下記 |
 

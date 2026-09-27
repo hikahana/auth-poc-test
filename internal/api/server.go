@@ -15,6 +15,7 @@ import (
 
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
 
@@ -22,10 +23,15 @@ type TokenVerifier interface {
 	Verify(ctx context.Context, idToken string) (firebaseauth.Identity, error)
 }
 
+type Revoker interface {
+	Revoke(ctx context.Context, targets []clients.Target) []revocation.Result
+}
+
 type Deps struct {
 	Verifier  TokenVerifier
 	Whitelist *whitelist.Store
 	Clients   *clients.Store
+	Revoker   Revoker
 	WebDir    string
 	Logger    *slog.Logger
 }
@@ -51,6 +57,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /v1/admin/clients/{id}", s.requireAdmin(s.handleUpdateClient))
 	mux.HandleFunc("POST /v1/admin/clients/{id}/secret", s.requireAdmin(s.handleRotateSecret))
 	mux.HandleFunc("GET /v1/admin/logins", s.requireAdmin(s.handleListLogins))
+	mux.HandleFunc("POST /v1/admin/logins/revoke", s.requireAdmin(s.handleRevokeLogins))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

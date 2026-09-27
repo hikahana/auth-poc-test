@@ -10,6 +10,7 @@ import (
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/config"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
@@ -42,6 +43,7 @@ func main() {
 		Verifier:  verifier,
 		Whitelist: wl,
 		Clients:   clients.New(db),
+		Revoker:   revocation.NewNotifier(verifier),
 		WebDir:    cfg.WebDir,
 		Logger:    logger,
 	})

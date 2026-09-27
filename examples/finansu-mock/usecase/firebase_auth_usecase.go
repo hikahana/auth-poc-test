@@ -143,6 +143,22 @@ func (u *FirebaseAuthUseCase) SignUp(c context.Context, idToken, name string, bu
 	return startSession(c, u.sessionRep, mailAuthID, userID)
 }
 
+// RevokeSessions drops the sessions of the user linked to sub, as told by the
+// auth platform when their email leaves the whitelist. FinanSu keeps one
+// session per user, so this also ends a password-login session: the person
+// has left NUTMEG, not just Google login. An unknown sub is not an error, so
+// the platform can retry safely.
+func (u *FirebaseAuthUseCase) RevokeSessions(c context.Context, sub string) error {
+	user, err := u.userRep.FindByAuthPlatformUserID(c, sub)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return u.sessionRep.DestroyByUserID(c, user.ID)
+}
+
 // linkByEmail ties a first-time Firebase login to the FinanSu user whose
 // mail_auth email matches. Only verified emails may be linked; otherwise
 // anyone could claim an account by registering its address in Firebase.

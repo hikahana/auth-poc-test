@@ -41,6 +41,12 @@ func NewVerifier(ctx context.Context, credentialsFile string) (*Verifier, error)
 	return &Verifier{client: client}, nil
 }
 
+// RevokeRefreshTokens stops the user's browsers from minting new ID tokens.
+// ID tokens already issued stay valid until they expire (at most an hour).
+func (v *Verifier) RevokeRefreshTokens(ctx context.Context, uid string) error {
+	return v.client.RevokeRefreshTokens(ctx, uid)
+}
+
 // Verify checks the ID token's signature, expiry, and issuer, and returns the
 // caller's identity. It does not check the whitelist — that is a separate,
 // application-level concern (see internal/whitelist).

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
 
@@ -65,12 +66,43 @@ func (s *Server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entry)
 }
 
+type revocationResponse struct {
+	Email       string              `json:"email"`
+	Revocations []revocation.Result `json:"revocations"`
+}
+
+// handleRemoveWhitelist removes the address first, so no new login can get
+// through, and then drops the sessions the person already holds in each
+// product. The per-product outcome is returned so the admin can see (and
+// retry via POST /v1/admin/logins/revoke) anything that failed.
 func (s *Server) handleRemoveWhitelist(w http.ResponseWriter, r *http.Request) {
-	err := s.Whitelist.Remove(r.Context(), r.PathValue("email"))
+	email := whitelist.Normalize(r.PathValue("email"))
+	err := s.Whitelist.Remove(r.Context(), email)
 	if s.writeWhitelistError(w, err) {
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+
+	results, err := s.revokeSessions(r, email)
+	if err != nil {
+		s.Logger.Error("removed from whitelist but revocation lookup failed", "email", email, "error", err)
+		writeError(w, http.StatusInternalServerError, "removed from the whitelist, but existing sessions could not be revoked; retry with force logout")
+		return
+	}
+	writeJSON(w, http.StatusOK, revocationResponse{Email: email, Revocations: results})
+}
+
+func (s *Server) revokeSessions(r *http.Request, email string) ([]revocation.Result, error) {
+	targets, err := s.Clients.RevocationTargets(r.Context(), email)
+	if err != nil {
+		return nil, err
+	}
+	results := s.Revoker.Revoke(r.Context(), targets)
+	for _, res := range results {
+		if res.Status == revocation.StatusFailed {
+			s.Logger.Warn("session revocation failed", "email", email, "target", res.Target, "detail", res.Detail)
+		}
+	}
+	return results, nil
 }
 
 // writeWhitelistError reports err (if any) and whether it did.

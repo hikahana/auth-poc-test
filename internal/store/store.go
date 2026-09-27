@@ -41,6 +41,8 @@ var migrations = []string{
 	)`,
 	// 5: revocation looks links up by email.
 	`CREATE INDEX idx_user_client_links_email ON user_client_links (email)`,
+	// 6: where each product receives "drop this user's sessions" notifications.
+	`ALTER TABLE clients ADD COLUMN revoke_url TEXT NOT NULL DEFAULT ''`,
 }
 
 func Open(path string) (*sql.DB, error) {

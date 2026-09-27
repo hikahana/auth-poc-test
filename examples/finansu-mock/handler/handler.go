@@ -4,22 +4,29 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/hikahana/auth-poc-test/examples/finansu-mock/authplatform"
 	"github.com/hikahana/auth-poc-test/examples/finansu-mock/usecase"
 	"github.com/labstack/echo/v4"
 )
 
 type Handler struct {
-	mailAuth *usecase.MailAuthUseCase
-	user     *usecase.UserUseCase
-	firebase *usecase.FirebaseAuthUseCase
+	mailAuth     *usecase.MailAuthUseCase
+	user         *usecase.UserUseCase
+	firebase     *usecase.FirebaseAuthUseCase
+	clientSecret string
 }
 
-func New(m *usecase.MailAuthUseCase, u *usecase.UserUseCase, f *usecase.FirebaseAuthUseCase) *Handler {
-	return &Handler{mailAuth: m, user: u, firebase: f}
+// New takes FinanSu's auth platform client secret, which also verifies the
+// platform's revocation notifications.
+func New(m *usecase.MailAuthUseCase, u *usecase.UserUseCase, f *usecase.FirebaseAuthUseCase, clientSecret string) *Handler {
+	return &Handler{mailAuth: m, user: u, firebase: f, clientSecret: clientSecret}
 }
 
 func (h *Handler) Register(e *echo.Echo) {
@@ -32,6 +39,30 @@ func (h *Handler) Register(e *echo.Echo) {
 
 	e.POST("/mail_auth/firebase_signin", h.PostMailAuthFirebaseSignin)
 	e.POST("/mail_auth/firebase_signup", h.PostMailAuthFirebaseSignup)
+	e.POST("/auth_platform/revocations", h.PostAuthPlatformRevocation)
+}
+
+// PostAuthPlatformRevocation receives the auth platform's signed "drop this
+// user's sessions" notification. The signature is the authentication.
+func (h *Handler) PostAuthPlatformRevocation(c echo.Context) error {
+	body, err := io.ReadAll(io.LimitReader(c.Request().Body, 64<<10))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "unreadable body")
+	}
+	sig := c.Request().Header.Get(authplatform.SignatureHeader)
+	if err := authplatform.VerifySignature(h.clientSecret, sig, body, time.Now()); err != nil {
+		c.Logger().Warn("rejected revocation notification: ", err)
+		return echo.NewHTTPError(http.StatusUnauthorized, "invalid signature")
+	}
+
+	var p authplatform.RevocationPayload
+	if err := json.Unmarshal(body, &p); err != nil || p.Event != authplatform.EventRevoked || p.Sub == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid payload")
+	}
+	if err := h.firebase.RevokeSessions(c.Request().Context(), p.Sub); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *Handler) PostUser(c echo.Context) error {

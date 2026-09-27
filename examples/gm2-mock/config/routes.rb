@@ -6,6 +6,7 @@ Rails.application.routes.draw do
     namespace :auth do
       post 'firebase_sign_in', to: 'firebase_sessions#create'
       post 'firebase_sign_up', to: 'firebase_sessions#sign_up'
+      post 'platform_revocations', to: 'platform_revocations#create'
     end
 
     namespace :v1 do

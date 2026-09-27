@@ -24,7 +24,7 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	c, secret, err := s.Create(ctx, " GM2 ")
+	c, secret, err := s.Create(ctx, " GM2 ", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestCreateAndAuthenticate(t *testing.T) {
 		}
 	}
 
-	if _, _, err := s.Create(ctx, "GM2"); !errors.Is(err, ErrDuplicateName) {
+	if _, _, err := s.Create(ctx, "GM2", ""); !errors.Is(err, ErrDuplicateName) {
 		t.Fatalf("duplicate name: got %v", err)
 	}
 }
@@ -53,7 +53,7 @@ func TestCreateAndAuthenticate(t *testing.T) {
 func TestRotateSecretAndDeactivateCutOffTheOldCredentials(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	c, oldSecret, _ := s.Create(ctx, "FinanSu")
+	c, oldSecret, _ := s.Create(ctx, "FinanSu", "")
 
 	newSecret, err := s.RotateSecret(ctx, c.ID)
 	if err != nil {
@@ -66,7 +66,8 @@ func TestRotateSecretAndDeactivateCutOffTheOldCredentials(t *testing.T) {
 		t.Errorf("new secret: %v", err)
 	}
 
-	if _, err := s.SetActive(ctx, c.ID, false); err != nil {
+	inactive := false
+	if _, err := s.Update(ctx, c.ID, &inactive, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authenticate(ctx, c.ID, newSecret); !errors.Is(err, ErrInvalidCredentials) {
@@ -81,8 +82,8 @@ func TestRotateSecretAndDeactivateCutOffTheOldCredentials(t *testing.T) {
 func TestRecordLoginKeepsOneRowPerLoginAndProduct(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	gm2, _, _ := s.Create(ctx, "GM2")
-	finansu, _, _ := s.Create(ctx, "FinanSu")
+	gm2, _, _ := s.Create(ctx, "GM2", "")
+	finansu, _, _ := s.Create(ctx, "FinanSu", "")
 
 	for _, rec := range []struct{ sub, client, email string }{
 		{"uid-1", gm2.ID, "Member@Example.com"},
@@ -113,5 +114,60 @@ func TestRecordLoginKeepsOneRowPerLoginAndProduct(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "FinanSu,GM2" {
 		t.Fatalf("logins for member = %v, want FinanSu and GM2", names)
+	}
+}
+
+func TestRevokeURLIsValidatedAndUpdatable(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, bad := range []string{"not a url", "ftp://example.com/x", "/relative/path", "http://"} {
+		if _, _, err := s.Create(ctx, "X-"+bad, bad); !errors.Is(err, ErrInvalidRevokeURL) {
+			t.Errorf("Create with %q: got %v, want ErrInvalidRevokeURL", bad, err)
+		}
+	}
+
+	c, _, err := s.Create(ctx, "GM2", "http://localhost:3100/api/auth/platform_revocations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newURL := "https://gm2.example.com/api/auth/platform_revocations"
+	updated, err := s.Update(ctx, c.ID, nil, &newURL)
+	if err != nil || updated.RevokeURL != newURL || !updated.IsActive {
+		t.Fatalf("Update revoke_url = %+v, %v", updated, err)
+	}
+	bad := "javascript:alert(1)"
+	if _, err := s.Update(ctx, c.ID, nil, &bad); !errors.Is(err, ErrInvalidRevokeURL) {
+		t.Errorf("Update with bad url: %v", err)
+	}
+	if found, err := s.FindByName(ctx, " GM2 "); err != nil || found.ID != c.ID {
+		t.Errorf("FindByName = %+v, %v", found, err)
+	}
+}
+
+func TestRevocationTargetsListEveryProductThePersonSignedInTo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	gm2, gm2Secret, _ := s.Create(ctx, "GM2", "http://gm2/revoke")
+	finansu, _, _ := s.Create(ctx, "FinanSu", "")
+
+	s.RecordLogin(ctx, "uid-1", gm2.ID, "member@example.com")
+	s.RecordLogin(ctx, "uid-1", finansu.ID, "member@example.com")
+	s.RecordLogin(ctx, "uid-9", gm2.ID, "other@example.com")
+
+	targets, err := s.RevocationTargets(ctx, "Member@Example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].ClientName != "FinanSu" || targets[1].ClientName != "GM2" {
+		t.Fatalf("targets = %+v", targets)
+	}
+	if targets[1].RevokeURL != "http://gm2/revoke" || targets[1].SigningKey != HashSecret(gm2Secret) || targets[1].Sub != "uid-1" {
+		t.Errorf("GM2 target = %+v", targets[1])
+	}
+
+	none, err := s.RevocationTargets(ctx, "never-logged-in@example.com")
+	if err != nil || len(none) != 0 {
+		t.Errorf("targets for a person who never signed in = %+v, %v", none, err)
 	}
 }

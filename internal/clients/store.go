@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -20,13 +21,29 @@ var (
 	ErrNotFound           = errors.New("no such client")
 	ErrDuplicateName      = errors.New("a client with this name already exists")
 	ErrInvalidCredentials = errors.New("invalid client credentials")
+	ErrInvalidRevokeURL   = errors.New("revoke_url must be an http(s) URL")
 )
 
 type Client struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	RevokeURL string    `json:"revoke_url"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Target is one place a user's sessions must be dropped: a product the
+// login has signed in to, with what is needed to notify it.
+type Target struct {
+	Sub        string
+	Email      string
+	ClientID   string
+	ClientName string
+	RevokeURL  string
+	// SigningKey is the stored hash of the product's secret. The product can
+	// derive the same value from its secret, so notifications can be signed
+	// without the platform ever keeping the secret itself.
+	SigningKey string
 }
 
 // Login is one (login, product) pair: this Firebase UID has signed in to
@@ -61,20 +78,33 @@ func HashSecret(secret string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-const columns = `id, name, is_active, created_at`
+const columns = `id, name, revoke_url, is_active, created_at`
 
 func scan(row interface{ Scan(...any) error }) (Client, error) {
 	var c Client
-	err := row.Scan(&c.ID, &c.Name, &c.IsActive, &c.CreatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.RevokeURL, &c.IsActive, &c.CreatedAt)
 	return c, err
+}
+
+// ValidRevokeURL accepts an empty string (notifications not set up yet) or an
+// absolute http(s) URL.
+func ValidRevokeURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // Create registers a product and returns its secret. The secret is shown
 // only here; afterwards only its hash exists.
-func (s *Store) Create(ctx context.Context, name string) (Client, string, error) {
+func (s *Store) Create(ctx context.Context, name, revokeURL string) (Client, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Client{}, "", errors.New("name is required")
+	}
+	if !ValidRevokeURL(revokeURL) {
+		return Client{}, "", ErrInvalidRevokeURL
 	}
 	id, err := randomToken("cl_", 12)
 	if err != nil {
@@ -85,7 +115,8 @@ func (s *Store) Create(ctx context.Context, name string) (Client, string, error)
 		return Client{}, "", err
 	}
 
-	_, err = s.db.ExecContext(ctx, `INSERT INTO clients (id, name, secret_hash) VALUES (?, ?, ?)`, id, name, HashSecret(secret))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO clients (id, name, secret_hash, revoke_url) VALUES (?, ?, ?, ?)`,
+		id, name, HashSecret(secret), revokeURL)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: clients.name") {
 		return Client{}, "", ErrDuplicateName
 	}
@@ -105,13 +136,21 @@ func (s *Store) Get(ctx context.Context, id string) (Client, error) {
 	return c, err
 }
 
+func (s *Store) FindByName(ctx context.Context, name string) (Client, error) {
+	c, err := scan(s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM clients WHERE name = ?`, strings.TrimSpace(name)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Client{}, ErrNotFound
+	}
+	return c, err
+}
+
 // Authenticate checks a product's credentials. Unknown, wrong and deactivated
 // clients all get the same error so callers cannot probe which is which.
 func (s *Store) Authenticate(ctx context.Context, id, secret string) (Client, error) {
 	var c Client
 	var hash string
 	err := s.db.QueryRowContext(ctx, `SELECT `+columns+`, secret_hash FROM clients WHERE id = ?`, id).
-		Scan(&c.ID, &c.Name, &c.IsActive, &c.CreatedAt, &hash)
+		Scan(&c.ID, &c.Name, &c.RevokeURL, &c.IsActive, &c.CreatedAt, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, ErrInvalidCredentials
 	}
@@ -140,13 +179,24 @@ func (s *Store) RotateSecret(ctx context.Context, id string) (string, error) {
 	return secret, nil
 }
 
-func (s *Store) SetActive(ctx context.Context, id string, active bool) (Client, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE clients SET is_active = ? WHERE id = ?`, active, id)
+// Update changes whichever of isActive / revokeURL is non-nil.
+func (s *Store) Update(ctx context.Context, id string, isActive *bool, revokeURL *string) (Client, error) {
+	if revokeURL != nil && !ValidRevokeURL(*revokeURL) {
+		return Client{}, ErrInvalidRevokeURL
+	}
+	c, err := s.Get(ctx, id)
 	if err != nil {
 		return Client{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return Client{}, ErrNotFound
+	if isActive != nil {
+		c.IsActive = *isActive
+	}
+	if revokeURL != nil {
+		c.RevokeURL = *revokeURL
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE clients SET is_active = ?, revoke_url = ? WHERE id = ?`,
+		c.IsActive, c.RevokeURL, id); err != nil {
+		return Client{}, err
 	}
 	return s.Get(ctx, id)
 }
@@ -206,4 +256,28 @@ func (s *Store) Logins(ctx context.Context, email string) ([]Login, error) {
 		list = append(list, l)
 	}
 	return list, rows.Err()
+}
+
+// RevocationTargets lists every (login, product) pair recorded for email,
+// i.e. every product that may still hold a session for that person.
+func (s *Store) RevocationTargets(ctx context.Context, email string) ([]Target, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT l.sub, l.email, c.id, c.name, c.revoke_url, c.secret_hash
+		FROM user_client_links l JOIN clients c ON c.id = l.client_id
+		WHERE l.email = ?
+		ORDER BY c.name, l.sub`, strings.ToLower(strings.TrimSpace(email)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var targets []Target
+	for rows.Next() {
+		var t Target
+		if err := rows.Scan(&t.Sub, &t.Email, &t.ClientID, &t.ClientName, &t.RevokeURL, &t.SigningKey); err != nil {
+			return nil, err
+		}
+		targets = append(targets, t)
+	}
+	return targets, rows.Err()
 }

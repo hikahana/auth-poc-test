@@ -14,6 +14,7 @@ import (
 
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
@@ -33,12 +34,21 @@ func (fakeVerifier) Verify(_ context.Context, idToken string) (firebaseauth.Iden
 	return firebaseauth.Identity{Sub: "uid-" + idToken, Email: idToken, EmailVerified: true}, nil
 }
 
+// recordingFirebase stands in for Firebase refresh-token revocation.
+type recordingFirebase struct{ revoked []string }
+
+func (f *recordingFirebase) RevokeRefreshTokens(_ context.Context, uid string) error {
+	f.revoked = append(f.revoked, uid)
+	return nil
+}
+
 const seededAdmin = "admin@example.com"
 
 type testEnv struct {
 	srv *httptest.Server
 	wl  *whitelist.Store
 	cl  *clients.Store
+	fb  *recordingFirebase
 	// credentials of a registered product ("GM2") used by verify
 	clientID, clientSecret string
 }
@@ -57,20 +67,22 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	cl := clients.New(db)
-	gm2, secret, err := cl.Create(ctx, "GM2")
+	gm2, secret, err := cl.Create(ctx, "GM2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	fb := &recordingFirebase{}
 	s := NewServer(Deps{
 		Verifier:  fakeVerifier{},
 		Whitelist: wl,
 		Clients:   cl,
+		Revoker:   revocation.NewNotifier(fb),
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	srv := httptest.NewServer(s.Routes())
 	t.Cleanup(srv.Close)
-	return &testEnv{srv: srv, wl: wl, cl: cl, clientID: gm2.ID, clientSecret: secret}
+	return &testEnv{srv: srv, wl: wl, cl: cl, fb: fb, clientID: gm2.ID, clientSecret: secret}
 }
 
 // as sends a request signed in (fake ID token) as `who`, or anonymously when
@@ -167,7 +179,7 @@ func TestRemovingFromWhitelistRevokesAccess(t *testing.T) {
 	e := newTestEnv(t)
 	e.as(t, seededAdmin, "POST", "/v1/admin/whitelist", `{"email":"member@example.com"}`)
 
-	if code, _ := e.as(t, seededAdmin, "DELETE", "/v1/admin/whitelist/member@example.com", ""); code != http.StatusNoContent {
+	if code, _ := e.as(t, seededAdmin, "DELETE", "/v1/admin/whitelist/member@example.com", ""); code != http.StatusOK {
 		t.Fatalf("delete: got %d", code)
 	}
 	if code, status := e.verify(t, "member@example.com"); code != http.StatusForbidden || status != StatusNotWhitelisted {
@@ -203,6 +215,7 @@ func TestAdminRoutesRequireTheAdminRole(t *testing.T) {
 		{"PATCH", "/v1/admin/clients/" + e.clientID, `{"is_active":false}`},
 		{"POST", "/v1/admin/clients/" + e.clientID + "/secret", ""},
 		{"GET", "/v1/admin/logins", ""},
+		{"POST", "/v1/admin/logins/revoke", `{"email":"member@example.com"}`},
 	}
 
 	for _, c := range callers {
