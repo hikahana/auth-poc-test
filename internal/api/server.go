@@ -1,6 +1,8 @@
-// Package api exposes the two things this platform is responsible for:
-// telling a registered product "who is this user" (POST /v1/auth/verify), and
-// letting administrators manage the platform (the /v1/admin/* routes).
+// Package api exposes what this platform is responsible for: signing NUTFes
+// members in with Google, refusing everyone else before Firebase is involved
+// (POST /v1/auth/google), telling a registered product "who is this user"
+// (POST /v1/auth/verify), and letting administrators manage the platform (the
+// /v1/admin/* routes).
 // Authorization for what a user may do inside a product stays in that
 // product — verify never returns product roles or permissions.
 package api
@@ -15,6 +17,7 @@ import (
 
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/googleauth"
 	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
 )
@@ -23,17 +26,27 @@ type TokenVerifier interface {
 	Verify(ctx context.Context, idToken string) (firebaseauth.Identity, error)
 }
 
+type GoogleVerifier interface {
+	Verify(ctx context.Context, credential string) (googleauth.Identity, error)
+}
+
+type CustomTokenIssuer interface {
+	CustomTokenFor(ctx context.Context, email string) (string, error)
+}
+
 type Revoker interface {
 	Revoke(ctx context.Context, targets []clients.Target) []revocation.Result
 }
 
 type Deps struct {
-	Verifier  TokenVerifier
-	Whitelist *whitelist.Store
-	Clients   *clients.Store
-	Revoker   Revoker
-	WebDir    string
-	Logger    *slog.Logger
+	Verifier     TokenVerifier
+	Google       GoogleVerifier
+	CustomTokens CustomTokenIssuer
+	Whitelist    *whitelist.Store
+	Clients      *clients.Store
+	Revoker      Revoker
+	WebDir       string
+	Logger       *slog.Logger
 }
 
 type Server struct {
@@ -45,6 +58,7 @@ func NewServer(d Deps) *Server { return &Server{Deps: d} }
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("POST /v1/auth/google", s.handleGoogleSignIn)
 	mux.HandleFunc("POST /v1/auth/verify", s.requireClient(s.handleVerify))
 
 	mux.HandleFunc("GET /v1/admin/whitelist", s.requireAdmin(s.handleListWhitelist))

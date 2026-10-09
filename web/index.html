@@ -26,19 +26,12 @@
 
 <section>
   <h2>1. Googleでログイン</h2>
-  <button id="google">Googleでログイン</button>
+  <p class="note">Googleでログインした結果を、Firebaseに入る前に認証基盤が名簿で確認します。
+  弾かれた人はFirebaseにユーザーが作られません。</p>
+  <div id="google"></div>
   <button id="signout">ログアウト</button>
   <p>状態: <span id="state">未ログイン</span></p>
   <details><summary>ID Token</summary><pre id="token"></pre></details>
-  <details>
-    <summary>メール/パスワードでのFirebaseログイン（任意）</summary>
-    <p class="note">確認メールのリンクを踏むまでは <code>email_unverified</code> で拒否されます。</p>
-    <input id="email" type="email" placeholder="email">
-    <input id="password" type="password" placeholder="password">
-    <button id="signin-pw">ログイン</button>
-    <button id="signup-pw">Firebaseに新規登録</button>
-    <button id="send-verify">確認メールを送信</button>
-  </details>
 </section>
 
 <section>
@@ -161,10 +154,9 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
-         createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendEmailVerification }
+import { getAuth, signInWithCustomToken, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-import { firebaseConfig } from "./firebase-config.js";
+import { firebaseConfig, googleClientId } from "./firebase-config.js";
 
 const auth = getAuth(initializeApp(firebaseConfig));
 const $ = (id) => document.getElementById(id);
@@ -356,15 +348,40 @@ async function loadAdminViews(user) {
   }
 }
 
-// ---- 1. Firebase login ----
-$("google").onclick = guard(() => signInWithPopup(auth, new GoogleAuthProvider()));
-$("signin-pw").onclick = guard(() => signInWithEmailAndPassword(auth, $("email").value, $("password").value));
-$("signup-pw").onclick = guard(() => createUserWithEmailAndPassword(auth, $("email").value, $("password").value));
-$("signout").onclick = guard(() => signOut(auth));
-$("send-verify").onclick = guard(async () => {
-  if (!auth.currentUser) throw new Error("先にログインしてください");
-  await sendEmailVerification(auth.currentUser);
-  alert("確認メールを送信しました。リンクを開いたあと、もう一度確認してください。");
+// ---- 1. Google login, checked by the platform before Firebase ----
+// Google Identity Services hands us a Google ID token; the platform applies the
+// whitelist and only then returns a Firebase custom token. People it refuses
+// never reach Firebase, so no Firebase user is created for them.
+const refusedText = {
+  not_nutfes_email: "ログインできるのは .nutfes@gmail.com のアドレスだけです",
+  disabled: "このアドレスは無効化されています",
+  email_unverified: "メールアドレスが確認されていません",
+};
+async function onGoogleCredential({ credential }) {
+  const res = await fetch("/v1/auth/google", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ credential }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const reason = refusedText[body.status] || body.error || `HTTP ${res.status}`;
+    verdict("state", false, `ログインできません: ${body.email ? `${body.email} — ` : ""}${reason}`);
+    return;
+  }
+  await signInWithCustomToken(auth, body.custom_token);
+}
+
+const gsi = document.createElement("script");
+gsi.src = "https://accounts.google.com/gsi/client";
+gsi.onload = () => {
+  google.accounts.id.initialize({ client_id: googleClientId, callback: (response) => guard(() => onGoogleCredential(response))(), auto_select: false });
+  google.accounts.id.renderButton($("google"), { theme: "outline", size: "large", text: "signin_with", locale: "ja" });
+};
+document.head.appendChild(gsi);
+
+$("signout").onclick = guard(async () => {
+  // Without this, Google may sign the same account straight back in.
+  window.google?.accounts.id.disableAutoSelect();
+  await signOut(auth);
 });
 
 onAuthStateChanged(auth, async (user) => {

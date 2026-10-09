@@ -4,21 +4,26 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 [docs/auth-poc-test-handoff.md](docs/auth-poc-test-handoff.md) を参照。
 
 - 対象: NUTMEGメンバー（実行委員）のみ。GM2の参加団体は従来のパスワードログインのまま
-- 認証: Firebase Authentication（無印。Identity Platformへは絶対にアップグレードしない）
+- 認証: Firebase Authentication（無印。Identity Platformへは絶対にアップグレードしない）。
+  ただしGoogleログインはFirebaseを通さずに行い、名簿で通した人だけをFirebaseに入れる（弾いた人はFirebaseに残らない）
 - 認可: 各プロダクト側の責務のまま。このAPIは「このユーザーは誰か」だけを答える
 - 名簿（ホワイトリスト）: `….nutfes@gmail.com` のアドレスだけを通し、初回ログインで自動登録する。締め出すときは無効化する
 
 ## 全体の流れ
 
 ```
-メンバー: 各プロダクトで「Googleでログイン」
-  ↓
-認証基盤: ID Tokenを検証
-  ├ .nutfes@gmail.com 以外 → 拒否（名簿にも残さない）
+メンバー: 各プロダクトで「Googleでログイン」（Google Identity Servicesのボタン。Firebaseはまだ使わない）
+  ↓ GoogleのID Token
+認証基盤 POST /v1/auth/google: GoogleのID Tokenを検証
+  ├ .nutfes@gmail.com 以外 → 拒否（名簿にもFirebaseにも残さない）
   ├ 初めてのアドレス → 名簿に「メンバー」として自動登録して通す
-  ├ 無効化されている → 拒否
-  └ 有効 → 通す（どのプロダクトにログインしたかを記録）
-      ↓
+  ├ 無効化されている → 拒否（Firebaseには入れない）
+  └ 有効 → Firebaseのユーザーを（なければ）作り、カスタムトークンを返す
+      ↓ signInWithCustomToken
+ブラウザ: Firebaseにログイン → FirebaseのID Tokenを各プロダクトへ
+  ↓
+認証基盤 POST /v1/auth/verify: 同じ名簿チェックをもう一度行い、通す（どのプロダクトにログインしたかを記録）
+  ↓
 各プロダクト: そのメールアドレスのアカウントがあるか
   ├ ある → ログイン完了（初回はメールで既存アカウントに自動で紐付け）
   └ ない → 新規登録画面へ。メールはGoogleのもので固定、残りの項目を入力して登録 → ログイン完了
@@ -26,24 +31,29 @@ NUTMEG関連プロダクトの共通認証基盤の個人PoC。設計の背景�
 
 ## セットアップ
 
-1. Firebaseコンソールで新規プロジェクトを作成し、Sign-in method で
-   メール/パスワード・Google を有効化する（手動作業。Admin SDK・Client SDKからは自動化不可）
+1. Firebaseコンソールで新規プロジェクトを作成し、Sign-in method の **Google・メール/パスワードはどちらも無効のままにする**
+   （有効になっていたら無効化する）。FirebaseのAPIキーはブラウザに公開されるので、有効だと誰でも直接Firebaseに
+   ユーザーを作れてしまい、名簿で先に弾く意味がなくなる。カスタムトークンでのログインは、この設定に関係なく使える
 2. プロジェクト設定 > サービスアカウント からサービスアカウントキー(JSON)を発行し、
-   リポジトリ直下に `service-account.json` として配置する（`.gitignore`済み）
-3. `.env.example` を `.env` にコピーする
-4. 最初の管理者を登録する（最初の1回だけ。以降の管理者は管理画面から追加する。`.nutfes@gmail.com` のアドレスに限る）
+   リポジトリ直下に `service-account.json` として配置する（`.gitignore`済み。カスタムトークンの署名にも使う）
+3. Google Cloudコンソール（Firebaseと同じプロジェクト）> APIとサービス > 認証情報 で、
+   「Web client (auto created by Google Service)」のクライアントIDを控える。
+   その「承認済みのJavaScript生成元」に、ログインボタンを置くページのオリジン（`http://localhost:8080` と `http://localhost`。
+   localhostはポート付きと無しの両方が要る）を追加する。載っていないオリジンではボタンが動かない
+4. `.env.example` を `.env` にコピーし、`GOOGLE_OAUTH_CLIENT_ID` に3.のクライアントIDを入れる（未設定だと起動しない）
+5. 最初の管理者を登録する（最初の1回だけ。以降の管理者は管理画面から追加する。`.nutfes@gmail.com` のアドレスに限る）
 
    ```bash
    go run ./cmd/seed-admin 22.taro.nutfes@gmail.com
    ```
 
-5. 起動する
+6. 起動する
 
    ```bash
    go run ./cmd/server
    ```
 
-6. 認証基盤を呼ぶプロダクトを登録し、出力されたIDと秘密鍵を各プロダクトの環境変数に設定する
+7. 認証基盤を呼ぶプロダクトを登録し、出力されたIDと秘密鍵を各プロダクトの環境変数に設定する
    （管理画面の「3. プロダクト」からも登録できる。秘密鍵は発行時に一度だけ表示される）
 
    2つ目の引数は、無効化した人のセッションを消すよう通知する先（プロダクトの受け口）。後から管理画面でも変更できる。
@@ -125,6 +135,7 @@ X-Auth-Platform-Signature: t=<UNIX秒>,v1=<HMAC-SHA256の16進>
 
 | メソッド | パス | 用途 |
 |---|---|---|
+| POST | `/v1/auth/google` | ブラウザが呼ぶ（認証不要）。GoogleのID Token（`{"credential"}`）を検証し、名簿で通した人にだけFirebaseのカスタムトークン（`custom_token`）を返す。初めての `.nutfes` アドレスは自動登録する。`status` は `verify` と同じ |
 | POST | `/v1/auth/verify` | 各プロダクトのサーバーが呼ぶ（要Basic認証）。Firebase ID Tokenを検証し、通してよいかを返す。初めての `.nutfes` アドレスは自動登録する |
 | GET | `/v1/admin/whitelist` | 名簿の一覧（無効化された人を含む）。管理者のみ |
 | POST | `/v1/admin/whitelist` | 名簿に先に登録しておく（`{"email", "role"}`。`role` 省略時は `member`）。主に管理者の追加用。管理者のみ |
@@ -151,20 +162,27 @@ X-Auth-Platform-Signature: t=<UNIX秒>,v1=<HMAC-SHA256の16進>
 | `allowed` | 200 | ログインしてよい（初めての `.nutfes` アドレスはこの時点で自動登録済み） |
 | `not_nutfes_email` | 403 | `.nutfes@gmail.com` 以外のアドレス |
 | `disabled` | 403 | 管理者によって無効化されている |
-| `email_unverified` | 403 | メールアドレスの所有確認が済んでいない（確認メールのリンクを踏んでいないメール/パスワードのアカウント） |
+| `email_unverified` | 403 | メールアドレスの所有確認が済んでいない |
 | （`error`のみ） | 401 | ID Tokenが不正 |
 
 `email_unverified` を拒否するのは、名簿をメールアドレスで照合しているためです。この確認がないと、他人の `.nutfes` アドレスで
-Firebaseアカウントを作るだけで、その人になりすませてしまいます。
+アカウントを作るだけで、その人になりすませてしまいます。
+
+`verify` でも名簿チェックをもう一度行うのは、`/v1/auth/google` を通らずに作られたFirebaseのログイン
+（Sign-in methodの設定を戻してしまった場合など）を通さないためです。
+`/v1/auth/google` は、Firebaseに同じメールの未確認ユーザー（以前のメール/パスワード登録など）がいたら、
+それを削除して作り直します。所有確認をしていない誰かが設定したパスワードを、Googleで確認済みとして扱わないためです。
 
 ## 動作確認
 
 `go run ./cmd/server` で起動したあと http://localhost:8080/ を開く（`web/`をこのサーバーが配信する）。
-`web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定を入れる。
+`web/firebase-config.js` は `web/firebase-config.example.js` をコピーしてFirebaseのWeb SDK設定と
+`googleClientId`（`.env` の `GOOGLE_OAUTH_CLIENT_ID` と同じ値）を入れる。
 
 1. 「1.」で、`seed-admin` で登録したアカウントでGoogleログインする（「2.」に名簿、「3.」にプロダクトが表示される）
 2. 「4. GM2」「5. FinanSu」で「Googleで〜にログイン」を押す。アカウントがなければ新規登録フォームが出る
-3. 別の `.nutfes` アカウントでログインすると、「2.」の名簿に「自動登録」として追加される。`.nutfes` 以外は拒否される
+3. 別の `.nutfes` アカウントでログインすると、「2.」の名簿に「自動登録」として追加される。`.nutfes` 以外は拒否され、
+   Firebaseコンソールの Authentication > ユーザー にも追加されない
 4. 「2.」の「ログインしたプロダクト」に、ログインしたプロダクトが記録されていることを確認する
 5. 「2.」でその人を無効化（または強制ログアウト）すると、結果欄にプロダクトごとの結果が出て、
    「4.」「5.」の「現在のユーザー」「current_user」が401になる。無効化した人は再ログインしても拒否される
@@ -182,7 +200,8 @@ Googleから新規登録したアカウントは、各プロダクトで一番�
 ## Firebase Authの制限（2026-09時点、[公式](https://firebase.google.com/docs/auth/limits)）
 
 - 登録ユーザー数は無制限。Identity Platformにアップグレードすると、Sparkプランで1日3,000アクティブユーザーまでになるので、アップグレードしない
-- 新規アカウント作成は同じIPアドレスから1時間100件まで。新入生説明会などで同じネットワークから一斉に初回ログインすると引っかかる可能性がある
+- 新規アカウント作成は同じIPアドレスから1時間100件まで。Firebaseのユーザーは認証基盤のサーバーがAdmin SDKで作るようになったので、
+  この制限がそのまま当てはまるかは未確認（当てはまる場合、全員分がサーバーのIPに集まるので、新入生説明会などの一斉初回ログインで引っかかりやすくなる）
 - 確認メールは1日1,000通、管理API（トークン無効化など）は毎秒1,000リクエストまで
 
 ## 未実装（PoCのスコープ外）
