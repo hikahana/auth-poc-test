@@ -10,6 +10,7 @@ import (
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/config"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/googleauth"
 	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
@@ -27,6 +28,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	google, err := googleauth.NewVerifier(cfg.GoogleClientID)
+	if err != nil {
+		logger.Error("failed to init google sign-in", "error", err)
+		os.Exit(1)
+	}
+
 	db, err := store.Open(cfg.DBPath)
 	if err != nil {
 		logger.Error("failed to open database", "error", err)
@@ -40,12 +47,14 @@ func main() {
 	}
 
 	server := api.NewServer(api.Deps{
-		Verifier:  verifier,
-		Whitelist: wl,
-		Clients:   clients.New(db),
-		Revoker:   revocation.NewNotifier(verifier),
-		WebDir:    cfg.WebDir,
-		Logger:    logger,
+		Verifier:     verifier,
+		Google:       google,
+		CustomTokens: verifier,
+		Whitelist:    wl,
+		Clients:      clients.New(db),
+		Revoker:      revocation.NewNotifier(verifier),
+		WebDir:       cfg.WebDir,
+		Logger:       logger,
 	})
 
 	logger.Info("starting auth platform API", "addr", cfg.Addr)

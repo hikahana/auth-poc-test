@@ -48,7 +48,7 @@
 - 既存のパスワードログインとGoogle SSOの両方をFirebase Auth上に統合
 - 既存ユーザーの移行は Admin SDKの`importUsers()`で一括インポート（bcrypt等の既存ハッシュアルゴリズムを指定すれば、パスワードリセットを強制せず移行可能）
 - **Identity Platformへのアップグレードは絶対に踏まない**こと（MFA・ブロッキング関数・SAML/OIDCプロバイダ機能を有効化すると自動的に不可逆でアップグレードされ、無料枠が「無制限」→「1日3,000アクティブユーザー」等に制限された上で課金対象になる）
-- フロントエンドはFirebase Client SDKで`signInWithPopup`等を呼ぶだけの薄い受け口に留め、ID Tokenの検証・whitelist照合・セッション発行はすべてバックエンド（認証基盤API）側で行う
+- フロントエンドはFirebase Client SDKで`signInWithPopup`等を呼ぶだけの薄い受け口に留め（2026-10-09に`signInWithPopup`は`signInWithCustomToken`へ変更。2.6参照）、ID Tokenの検証・whitelist照合・セッション発行はすべてバックエンド（認証基盤API）側で行う
 - **注意**: Firebase Admin SDKの公式対応言語はNode.js / Java / Python / Go / C#で、**Rubyは非対応**。Railsからは`ruby-jwt`等でID Tokenを自前検証するか、Identity Toolkit REST APIを直接叩く実装が必要になる。認証基盤API自体をGoで書くなら公式SDKがそのまま使える
 
 **案B: Firebaseを使わず、生のGoogle OAuth（サーバーフロー）を自前実装する**
@@ -74,6 +74,13 @@
 - 2.3の指摘どおり `〇〇.nutfes@gmail.com` は誰でも作れる。このリスクは許容し、自動登録された人を管理画面で確認して無効化する運用とする
 - 締め出しは削除ではなく無効化（削除すると次のログインで自動登録されて戻るため）。入学年度（アドレス先頭の2桁）と名簿への登録日で一括無効化できる
 
+### 2.6 Firebaseに入れる前に名簿で弾く（2026-10-09決定）
+- 名簿で弾いた人のユーザーもFirebaseに作られてしまうのを避けるため、GoogleログインをFirebaseの手前で行う
+  （Google Identity Services → 認証基盤 `POST /v1/auth/google` で名簿チェック → 通した人にだけカスタムトークン → `signInWithCustomToken`）
+- Firebase側でユーザー作成前に弾く仕組み（ブロッキング関数 `beforeCreate`）はIdentity Platformへのアップグレードが必要なので使わない（2.2）
+- FirebaseのSign-in methodはGoogle・メール/パスワードとも無効にする。Firebaseのユーザーは認証基盤がAdmin SDKで作るものだけになる
+- 各プロダクトの流れ（FirebaseのID Token → `verify`）は変えない。`verify` でも名簿チェックを続ける
+
 ## 3. テーブル設計（たたき台）
 
 ### 認証基盤側
@@ -96,12 +103,14 @@
 
 ```
 [各プロダクト]
-   ├─ 既存パスワードログインフォーム ──┐
-   └─ 「Googleでログイン」ボタン ──────┤
-                                     ↓
-                Firebase Auth（共有プロジェクト・両プロバイダ有効）
+   ├─ 既存パスワードログインフォーム ──────────→ 各プロダクトの既存ログイン（変更なし）
+   └─ 「Googleでログイン」ボタン（Google Identity Services）
+                                     ↓ GoogleのID Token
+                自作の認証基盤API /v1/auth/google（whitelist照合。弾いた人はここで終わり）
+                                     ↓ カスタムトークン
+                Firebase Auth（共有プロジェクト・Sign-in methodはすべて無効）
                                      ↓ ID Token
-                自作の認証基盤API（Go/Rails・トークン検証＋whitelist照合）
+                自作の認証基盤API /v1/auth/verify（トークン検証＋whitelist照合）
                                      ↓
                        各プロダクトへ独自セッション発行
 ```
@@ -111,7 +120,7 @@
 1. ~~案A・案Bどちらで進めるか決定する~~ → **案A（Firebase Authentication）に決定済み**
 2. 認証基盤API自体の実装言語を決定する（Go推奨。理由: Firebase Admin SDK公式対応）
 3. リポジトリのディレクトリ構成を作る（例: `cmd/`, `internal/`, `docs/`）
-4. Firebaseプロジェクトの新規作成、Sign-in method有効化（メール/パスワード・Google）はFirebaseコンソールでの手動操作が必要
+4. Firebaseプロジェクトの新規作成はFirebaseコンソールでの手動操作が必要（Sign-in methodは2.6によりすべて無効のまま）
 5. 上記テーブル設計をもとにマイグレーションファイルを作成（`whitelist`テーブルは独自実装として必須）
 6. 認証基盤APIのエンドポイント設計（トークン検証エンドポイント、whitelist承認用の管理エンドポイント等）に着手
 

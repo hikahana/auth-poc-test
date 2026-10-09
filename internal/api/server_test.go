@@ -15,6 +15,7 @@ import (
 
 	"github.com/hikahana/auth-poc-test/internal/clients"
 	"github.com/hikahana/auth-poc-test/internal/firebaseauth"
+	"github.com/hikahana/auth-poc-test/internal/googleauth"
 	"github.com/hikahana/auth-poc-test/internal/revocation"
 	"github.com/hikahana/auth-poc-test/internal/store"
 	"github.com/hikahana/auth-poc-test/internal/whitelist"
@@ -35,8 +36,27 @@ func (fakeVerifier) Verify(_ context.Context, idToken string) (firebaseauth.Iden
 	return firebaseauth.Identity{Sub: "uid-" + idToken, Email: idToken, EmailVerified: true}, nil
 }
 
-// recordingFirebase stands in for Firebase refresh-token revocation.
-type recordingFirebase struct{ revoked []string }
+// fakeGoogle reads Google ID tokens the same way fakeVerifier reads Firebase ones.
+type fakeGoogle struct{}
+
+func (fakeGoogle) Verify(_ context.Context, credential string) (googleauth.Identity, error) {
+	if credential == "bad" {
+		return googleauth.Identity{}, errors.New("bad token")
+	}
+	if email, ok := strings.CutPrefix(credential, "unverified:"); ok {
+		return googleauth.Identity{Email: email, EmailVerified: false}, nil
+	}
+	return googleauth.Identity{Email: credential, EmailVerified: true}, nil
+}
+
+// recordingFirebase stands in for Firebase: refresh-token revocation, and the
+// users created (custom tokens issued) by Google sign-in.
+type recordingFirebase struct{ revoked, created []string }
+
+func (f *recordingFirebase) CustomTokenFor(_ context.Context, email string) (string, error) {
+	f.created = append(f.created, email)
+	return "custom-token-for-" + email, nil
+}
 
 func (f *recordingFirebase) RevokeRefreshTokens(_ context.Context, uid string) error {
 	f.revoked = append(f.revoked, uid)
@@ -75,11 +95,13 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	fb := &recordingFirebase{}
 	s := NewServer(Deps{
-		Verifier:  fakeVerifier{},
-		Whitelist: wl,
-		Clients:   cl,
-		Revoker:   revocation.NewNotifier(fb),
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Verifier:     fakeVerifier{},
+		Google:       fakeGoogle{},
+		CustomTokens: fb,
+		Whitelist:    wl,
+		Clients:      cl,
+		Revoker:      revocation.NewNotifier(fb),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	srv := httptest.NewServer(s.Routes())
 	t.Cleanup(srv.Close)

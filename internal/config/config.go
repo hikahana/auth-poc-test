@@ -7,6 +7,7 @@ type Config struct {
 	Addr                string
 	DBPath              string
 	FirebaseCredentials string
+	GoogleClientID      string
 	WebDir              string
 }
 
@@ -16,6 +17,7 @@ func Load() Config {
 		Addr:                getenv("AUTH_PLATFORM_ADDR", ":8080"),
 		DBPath:              getenv("AUTH_PLATFORM_DB_PATH", "auth-platform.db"),
 		FirebaseCredentials: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+		GoogleClientID:      os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
 	}
 }
 
